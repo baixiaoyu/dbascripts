@@ -9,3 +9,6 @@ find diffrent rows for table:sbtest46 in chunk_num:1
 find diffrent rows id: 88`
 
 later i'll change some implementation to improve performance.
+
+
+compare-data-v2 can compre mysql data,for database has 50 tables each table has 5000000 rows, it takes 20 seconds. 
