@@ -78,7 +78,7 @@ func CompareTable(table_name string) {
 	for i := 1; i <= round; i++ {
 
 		chunk_number = i
-		start_pk = i * chunk_size
+		start_pk = (i - 1) * chunk_size
 		end_pk = start_pk + chunk_size
 		source_condition := fmt.Sprintf("where %s >=%d and %s <= %d", sourcePkColumn, start_pk, sourcePkColumn, end_pk)
 		source_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
@@ -92,39 +92,32 @@ func CompareTable(table_name string) {
 		RecordCrcResult(crc_db, targetCrcResult, "target")
 
 	}
-	if chunk_number == 0 {
-		start_pk = 1
-	} else {
-		start_pk = chunk_number * chunk_size
+	if end_pk < sourcePkInfo.Max {
+
+		if chunk_number == 0 {
+			start_pk = 1
+		} else {
+			start_pk = chunk_number * chunk_size
+		}
+
+		end_pk = sourcePkInfo.Max
+
+		source_condition := fmt.Sprintf("where %s >%d ", sourcePkColumn, start_pk)
+		source_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+
+		sourceCrcResult := QueryChecksum(source_db, source_sql)
+
+		RecordCrcResult(crc_db, sourceCrcResult, "source")
+
+		target_condition := fmt.Sprintf("where %s >%d ", targetPkColumn, start_pk)
+		target_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.TargetMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
+
+		targetCrcResult := QueryChecksum(target_db, target_sql)
+
+		RecordCrcResult(crc_db, targetCrcResult, "target")
 	}
-
-	end_pk = sourcePkInfo.Max
-
-	source_condition := fmt.Sprintf("where %s >%d ", sourcePkColumn, start_pk)
-	source_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
-
-	sourceCrcResult := QueryChecksum(source_db, source_sql)
-
-	RecordCrcResult(crc_db, sourceCrcResult, "source")
-
-	target_condition := fmt.Sprintf("where %s >%d ", targetPkColumn, start_pk)
-	target_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.TargetMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
-
-	targetCrcResult := QueryChecksum(target_db, target_sql)
-
-	RecordCrcResult(crc_db, targetCrcResult, "target")
 	matex.Unlock()
 }
-
-// type CrcResult struct {
-// 	dbname       string
-// 	tabname      string
-// 	chunk_number int
-// 	startpk      int
-// 	endpk        int
-// 	cnt          int
-// 	crc          string
-// }
 
 func main() {
 	ForceRead("db.conf.json")
