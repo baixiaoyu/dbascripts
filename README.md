@@ -1,26 +1,16 @@
-# dbascripts
-scripts for dba
-bigtrx.py is used for getting mysql biggest transactions from start time to end time, order by size ,time, and affected rows.
+##About this project
+common use tools for dba
 
-compare-data-v2 can compre mysql data,for database has 50 tables each table has 5000000 rows, it takes 20 seconds. 
+##tools
 
-`begin compare
-begin compare
-Queue.startMonitoring(DEFAULT)table name : sbtest5
-table name : user
-queue len is 0queue len is 0table compare elapsed: 348.316028ms
-begin to find diff
-find diffrent rows for table:sbtest5 in chunk_num:0
-find diffrent rows id: 2
-find diffrent rows for table:user in chunk_num:0
-find diffrent rows id: 1
-find diffrent rows for table:user in chunk_num:0
-find diffrent rows id: 2
-find diffrent rows for table:user in chunk_num:0
-find diffrent rows id: 3
-done`
+* big transaction analyze
+    *  can input a binlog file get big transaction information like time,size,rows
+    *  can get big transaction details
+* data compare
+    * compare mysql data very fast,50 tables ,each table has 500w rows, tasks 30s.
+    * you can even use it in replication
+    * you can add it to daily task
 
- for replication that doesn't have too high qps, compare-data-v2 can compare data.
- you can add it to daily task very easy.
+
 
 
