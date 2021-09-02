@@ -28,6 +28,7 @@ func QueryAllTabs(db *sqlx.DB) []string {
 	err := db.Select(&tableNames, sql)
 	if err != nil {
 		fmt.Printf("query tables err:%v\n", err)
+		println(sql)
 
 		return nil
 	}
@@ -46,6 +47,7 @@ func GetAutoIncrementPkColumn(db *sqlx.DB, db_name string, table_name string) (s
 	err := db.Select(&pkNames, sql)
 	if err != nil {
 		fmt.Printf("query tables err:%v\n", err)
+		println(sql)
 
 		return "", nil
 	}
@@ -56,6 +58,7 @@ func GetAutoIncrementPkColumn(db *sqlx.DB, db_name string, table_name string) (s
 	err = db.Select(&pkinfo, sql)
 	if err != nil {
 		fmt.Printf("query tables err:%v\n", err)
+		println(sql)
 
 		return "", nil
 	}
@@ -77,9 +80,14 @@ func FindDiffrentRows(Crcdb *sqlx.DB, Sourcedb *sqlx.DB, Targetdb *sqlx.DB) {
 
 		Target_column_string = ""
 		Source_column_string = ""
+		Target_nullable_column_string = ""
+		Source_nullable_column_string = ""
 
 		source_all_column := GetCols(Sourcedb, Config.SourceMySQLDB, row.Tab_name)
 		target_all_column := GetCols(Targetdb, Config.TargetMySQLDB, row.Tab_name)
+
+		source_isnullable_column := GetIsNullableCols(Source_db, Config.SourceMySQLDB, row.Tab_name)
+		target_isnullable_column := GetIsNullableCols(Target_db, Config.TargetMySQLDB, row.Tab_name)
 
 		for _, value := range source_all_column {
 			Source_column_string = fmt.Sprintf("%s%s,", Source_column_string, value)
@@ -94,6 +102,22 @@ func FindDiffrentRows(Crcdb *sqlx.DB, Sourcedb *sqlx.DB, Targetdb *sqlx.DB) {
 		}
 		Target_column_string = Target_column_string[:len(Target_column_string)-1]
 
+		for _, value := range source_isnullable_column {
+			Source_nullable_column_string = fmt.Sprintf("%s%s,", Source_nullable_column_string, value)
+		}
+		if len(source_isnullable_column) > 0 {
+			Source_nullable_column_string = Source_nullable_column_string[:len(Source_nullable_column_string)-1]
+
+		}
+
+		for _, value := range target_isnullable_column {
+			Target_nullable_column_string = fmt.Sprintf("%s%s,", Target_nullable_column_string, value)
+		}
+		if len(Target_nullable_column_string) > 0 {
+			Target_nullable_column_string = Target_nullable_column_string[:len(Target_nullable_column_string)-1]
+
+		}
+
 		sourcePkColumn, _ := GetAutoIncrementPkColumn(Sourcedb, Config.SourceMySQLDB, row.Tab_name)
 		targetPkColumn, _ := GetAutoIncrementPkColumn(Targetdb, Config.TargetMySQLDB, row.Tab_name)
 
@@ -101,14 +125,28 @@ func FindDiffrentRows(Crcdb *sqlx.DB, Sourcedb *sqlx.DB, Targetdb *sqlx.DB) {
 		start_pk := row.Start_pk
 		end_pk := row.End_pk
 		table_name := row.Tab_name
+		var source_sql string
+		var target_sql string
 		for i := start_pk; i <= end_pk; i++ {
 
 			source_condition := fmt.Sprintf("where %s >=%d and %s < %d", sourcePkColumn, i, sourcePkColumn, i+1)
-			source_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+			if len(source_isnullable_column) > 0 {
+				source_sql = fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s,CONCAT(%s))) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Source_nullable_column_string, Config.SourceMySQLDB, table_name, source_condition)
+
+			} else {
+				source_sql = fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+
+			}
 			sourceCrcResult := QueryChecksum(Source_db, source_sql)
 
 			target_condition := fmt.Sprintf("where %s >=%d and %s < %d", targetPkColumn, i, targetPkColumn, i+1)
-			target_sql := fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
+			if len(target_isnullable_column) > 0 {
+				target_sql = fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s,CONCAT(%s))) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Target_nullable_column_string, Config.TargetMySQLDB, table_name, target_condition)
+
+			} else {
+				target_sql = fmt.Sprintf("select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
+
+			}
 			targetCrcResult := QueryChecksum(Target_db, target_sql)
 
 			if sourceCrcResult.Crc != targetCrcResult.Crc {
@@ -129,16 +167,24 @@ func RecordCrcResult(db *sqlx.DB, crcresult *CrcResult, which string) {
 func RecreateCrcTable(db *sqlx.DB) {
 	sql := "create table if not exists  `crc_result` (`id` int(11) NOT NULL AUTO_INCREMENT,`dbname` varchar(100) NOT NULL DEFAULT '',`table_name` varchar(50) NOT NULL DEFAULT '',`chunk_num` int(11) NOT NULL,`start_pk` int(11) NOT NULL,`end_pk` int(11) NOT NULL,`crc` varchar(100) DEFAULT NULL,`cnt` int(11) DEFAULT NULL,`ctime` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,`which` varchar(10) DEFAULT NULL,PRIMARY KEY (`id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8 "
 
-	err := db.MustExec(sql)
+	_, err := db.Exec(sql)
 	if err != nil {
-		fmt.Printf("create crc tables err:%v\n", err)
+		fmt.Printf("create crc tables err:%+v\n", err)
 	}
 	sql = "delete from crc_result"
-	err = db.MustExec(sql)
+	_, err = db.Exec(sql)
 	if err != nil {
 		fmt.Printf("delete crc tables err:%v\n", err)
 	}
 
+}
+
+func SetISOLATION(db *sqlx.DB) {
+	sql := "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+	_, err := db.Exec(sql)
+	if err != nil {
+		fmt.Printf("set session ISOLATION err:%+v\n", err)
+	}
 }
 
 func DealSql(instanceKey string) {
@@ -160,6 +206,20 @@ func GetCols(db *sqlx.DB, db_name string, table_name string) []string {
 	err := db.Select(&columnNames, sql)
 	if err != nil {
 		fmt.Printf("query tables err:%v\n", err)
+		println(sql)
+		return nil
+	}
+	return columnNames
+}
+
+func GetIsNullableCols(db *sqlx.DB, db_name string, table_name string) []string {
+	sql := fmt.Sprintf("select concat('isnull(',COLUMN_NAME,')') from information_schema.columns where TABLE_SCHEMA='%s' and TABLE_NAME='%s' and IS_NULLABLE = 'yes'", db_name, table_name)
+	var columnNames []string
+	err := db.Select(&columnNames, sql)
+	if err != nil {
+		fmt.Printf("query tables err:%v\n", err)
+		println(sql)
+
 		return nil
 	}
 	return columnNames
@@ -181,6 +241,7 @@ func QueryChecksum(db *sqlx.DB, sql string) *CrcResult {
 	err := db.Select(&crcResult, sql)
 	if err != nil {
 		fmt.Printf("query tables err:%v\n", err)
+		println(sql)
 
 		return nil
 	}

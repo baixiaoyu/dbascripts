@@ -14,6 +14,9 @@ var Target_db *sqlx.DB
 var Crc_db *sqlx.DB
 var Source_column_string string
 var Target_column_string string
+var Target_nullable_column_string string
+var Source_nullable_column_string string
+
 var wg sync.WaitGroup
 var SourcePkColumn string
 var TargetPkColumn string
@@ -28,7 +31,6 @@ func init() {
 }
 
 func CompareTable(table_name string) {
-	//对比自增主键是否一致
 	println("begin compare")
 
 	defer wg.Done()
@@ -53,21 +55,40 @@ func CompareTable(table_name string) {
 	source_all_column := GetCols(Source_db, Config.SourceMySQLDB, table_name)
 	target_all_column := GetCols(Target_db, Config.TargetMySQLDB, table_name)
 
+	source_isnullable_column := GetIsNullableCols(Source_db, Config.SourceMySQLDB, table_name)
+	target_isnullable_column := GetIsNullableCols(Target_db, Config.TargetMySQLDB, table_name)
+
 	matex.Lock()
 	Target_column_string = ""
 	Source_column_string = ""
+
+	Target_nullable_column_string = ""
+	Source_nullable_column_string = ""
+
 	for _, value := range source_all_column {
 		Source_column_string = fmt.Sprintf("%s%s,", Source_column_string, value)
-
 	}
 	Source_column_string = Source_column_string[:len(Source_column_string)-1]
 
 	for _, value := range target_all_column {
-		//Target_column_string = Target_column_string + value + ","
 		Target_column_string = fmt.Sprintf("%s%s,", Target_column_string, value)
-
 	}
 	Target_column_string = Target_column_string[:len(Target_column_string)-1]
+
+	for _, value := range source_isnullable_column {
+		Source_nullable_column_string = fmt.Sprintf("%s%s,", Source_nullable_column_string, value)
+	}
+	if len(source_isnullable_column) > 0 {
+		Source_nullable_column_string = Source_nullable_column_string[:len(Source_nullable_column_string)-1]
+	}
+
+	for _, value := range target_isnullable_column {
+		Target_nullable_column_string = fmt.Sprintf("%s%s,", Target_nullable_column_string, value)
+	}
+	if len(target_isnullable_column) > 0 {
+		Target_nullable_column_string = Target_nullable_column_string[:len(Target_nullable_column_string)-1]
+
+	}
 
 	row_count := sourcePkInfo.Max - sourcePkInfo.Min + 1
 	round := row_count / chunk_size
@@ -76,21 +97,32 @@ func CompareTable(table_name string) {
 	var chunk_number int
 	var start_pk int
 	var end_pk int
+	var source_sql string
+	var target_sql string
+
 	for i := 1; i <= round; i++ {
 
 		chunk_number = i
 		start_pk = (i - 1) * chunk_size
 		end_pk = start_pk + chunk_size
 		source_condition := fmt.Sprintf("where %s >=%d and %s <= %d", sourcePkColumn, start_pk, sourcePkColumn, end_pk)
-		source_sql := fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "source", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+		if len(source_isnullable_column) > 0 {
+			source_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s,CONCAT(%s))) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "source", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Source_nullable_column_string, Config.SourceMySQLDB, table_name, source_condition)
+
+		} else {
+			source_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk ,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "source", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+		}
 		DiscoveryQueue.Push(source_sql)
-		//sourceCrcResult := QueryChecksum(Source_db, source_sql)
-		//RecordCrcResult(Crc_db, sourceCrcResult, "source")
+
 		target_condition := fmt.Sprintf("where %s >=%d and %s <= %d", targetPkColumn, start_pk, targetPkColumn, end_pk)
-		target_sql := fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "target", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
+		if len(target_isnullable_column) > 0 {
+			target_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s,CONCAT(%s))) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "target", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Target_nullable_column_string, Config.TargetMySQLDB, table_name, target_condition)
+
+		} else {
+			target_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "target", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
+
+		}
 		DiscoveryQueue.Push(target_sql)
-		//targetCrcResult := QueryChecksum(Target_db, target_sql)
-		//RecordCrcResult(Crc_db, targetCrcResult, "target")
 
 	}
 	if end_pk < sourcePkInfo.Max {
@@ -104,17 +136,21 @@ func CompareTable(table_name string) {
 		end_pk = sourcePkInfo.Max
 
 		source_condition := fmt.Sprintf("where %s >%d ", sourcePkColumn, start_pk)
-		source_sql := fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "source", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+		if len(source_isnullable_column) > 0 {
+			source_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s,CONCAT(%s))) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "source", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Source_nullable_column_string, Config.SourceMySQLDB, table_name, source_condition)
+		} else {
+			source_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "source", Config.SourceMySQLDB, table_name, chunk_number, start_pk, end_pk, Source_column_string, Config.SourceMySQLDB, table_name, source_condition)
+		}
 		DiscoveryQueue.Push(source_sql)
-		// sourceCrcResult := QueryChecksum(Source_db, source_sql)
-		// RecordCrcResult(Crc_db, sourceCrcResult, "source")
 
 		target_condition := fmt.Sprintf("where %s >%d ", targetPkColumn, start_pk)
-		target_sql := fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "target", Config.TargetMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
-		DiscoveryQueue.Push(target_sql)
+		if len(target_isnullable_column) > 0 {
+			target_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s,CONCAT(%s))) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "target", Config.TargetMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Target_nullable_column_string, Config.TargetMySQLDB, table_name, target_condition)
 
-		// targetCrcResult := QueryChecksum(Target_db, target_sql)
-		// RecordCrcResult(Crc_db, targetCrcResult, "target")
+		} else {
+			target_sql = fmt.Sprintf("%s:select '%s' as dbname ,'%s' as table_name,'%d' as chunk_num,'%d' as startpk,'%d' as endpk,count(*) as cnt,COALESCE(LOWER(CONV(BIT_XOR(CAST(CRC32(CONCAT_WS('#', %s)) AS UNSIGNED)), 10, 16)), 0) AS crc from %s.%s force index(`PRIMARY`) %s", "target", Config.TargetMySQLDB, table_name, chunk_number, start_pk, end_pk, Target_column_string, Config.TargetMySQLDB, table_name, target_condition)
+		}
+		DiscoveryQueue.Push(target_sql)
 	}
 	matex.Unlock()
 }
@@ -124,6 +160,28 @@ func main() {
 
 	Source_db, _ = InitMySQL(Config.SourceMySQLHost, Config.SourceMySQLPort, Config.SourceMySQLDB, Config.SourceMySQLUser, Config.SourceMySQLUserPassword)
 	Target_db, _ = InitMySQL(Config.TargetMySQLHost, Config.TargetMySQLPort, Config.TargetMySQLDB, Config.TargetMySQLUser, Config.TargetMySQLUserPassword)
+
+	SetISOLATION(Source_db)
+	SetISOLATION(Target_db)
+
+	stx, err := Source_db.Beginx() // 开启事务
+	if err != nil {
+		fmt.Printf("source dbbegin trans failed, err:%v\n", err)
+	}
+
+	ttx, err := Target_db.Beginx() // 开启事务
+	if err != nil {
+		fmt.Printf("source dbbegin trans failed, err:%v\n", err)
+	}
+	defer func() {
+		println("done")
+		stx.Commit()
+		ttx.Commit()
+		Source_db.Close()
+		Target_db.Close()
+		Crc_db.Close()
+
+	}()
 
 	Crc_db, _ = InitMySQL(Config.ChecksumHost, Config.ChecksumPort, Config.ChecksumDB, Config.ChecksumUser, Config.ChecksumPassword)
 
@@ -158,6 +216,7 @@ func main() {
 
 	wg.Wait()
 	elapsed := time.Since(t)
+	time.Sleep(time.Duration(2) * time.Second)
 	fmt.Println("table compare elapsed:", elapsed)
 
 	//time.Sleep(time.Duration(100) * time.Second)
@@ -165,6 +224,7 @@ func main() {
 		if Counter == 0 {
 			StopMonitoring()
 			FindDiffrentRows(Crc_db, Source_db, Target_db)
+			return
 		}
 	}
 }
