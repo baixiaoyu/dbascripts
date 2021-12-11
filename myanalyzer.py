@@ -198,17 +198,17 @@ def analyse_processlist(db, outfile, time=10):
         prefix = row["INFO"][20].lower()
         if prefix.startswith("update") or prefix.startswith("delete") or prefix.startswith("insert") and row[
             "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables",
-                         "executing", "updating main table", "updating reference tables"]:
+                         "executing", "updating main table", "updating reference tables","Searching rows for update"]:
             dml_long_query.append(row)
         elif prefix.startswith("select") and row["STATE"] in ["Sending data", "Copying to tmp table",
                                                               "Copying to tmp table on disk", "Creating sort index",
                                                               "executing", "Sorting for group", "Sorting for order",
-                                                              "Sorting result", ]:
+                                                              "Sorting result","removing tmp table","Sending to client"]:
             select_long_query.append(row)
         elif (prefix.startswith("alter") or prefix.startswith("drop") or prefix.startswith("truncate")) and row[
             "STATE"] in ["altering table", "copy to tmp table", "Creating index",
                          "committing alter table to storage engine", "discard_or_import_tablespace",
-                         "preparing for alter table"]:
+                         "preparing for alter table","rename"]:
             ddl_long_query.append(row)
         else:
             if row["STATE"] == "login":
@@ -217,8 +217,21 @@ def analyse_processlist(db, outfile, time=10):
     for row in results:
         print >> outfile, row
 
+        if row["STATE"] == "Rolling back":
+            msg.fail("transaction is rolling back")
+        if row["STATE"] == "Creating sort index":
+            msg.fail("consider optimize sql")
+            msg.fail("info:", row["INFO"])
         if row["STATE"] == "Waiting for commit lock":
             msg.fail("FLUSH TABLES WITH READ LOCK is waiting for a commit lock.")
+        if row["STATE"] == "Sending data":
+            msg.fail("consider enlarge buffer pool or optimize sql")
+            msg.fail("info:",row["INFO"])
+        if row["STATE"] == "Copying to tmp table on disk":
+            msg.fail("consider enlarge max_heap_table_size and tmp_table_size")
+            msg.fail("info:", row["INFO"])
+        if row["STATE"] == "Sending to client":
+            msg.fail("Consider to enlarge  net_buffer_length or socket send buffer /proc/sys/net/core/wmem_default ,net_buffer_length  dynamically enlarged up to max_allowed_packet bytes as needed.")
         if row["STATE"] == "Waiting for global read lock":
             msg.fail(
                 "FLUSH TABLES WITH READ LOCK is waiting for a global read lock or the global read_only system variable is being set.")
@@ -241,7 +254,7 @@ def analyse_processlist(db, outfile, time=10):
             pass
         if row["STATE"] == "Waiting for table flush":
             msg.fail(
-                "id :{}  {}is blocked by lock table or long queries.waiting {} seconds ".format(row["ID"], row["INFO"],
+                "id :{}  {}is blocked by lock table or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],
                                                                                                 row["TIME"]))
             # show lock table thread and long query info
             show_long_query(select_long_query, dml_long_query, ddl_long_query)
@@ -250,6 +263,7 @@ def analyse_processlist(db, outfile, time=10):
             msg.fail("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
                                                                                                row["TIME"]))
             # show long query and check big transaction
+            # query processlist according table name
             show_long_query(select_long_query, dml_long_query, ddl_long_query)
             show_big_transaction(bigtrx)
         if row["STATE"] == "updating":
@@ -289,6 +303,7 @@ def analyse_processlist(db, outfile, time=10):
             if open_table_count > 10:
                 msg.fail(
                     "increase table_open_cache or decrease tables in sql or decrease sql parrallel execution or disk performance is not good")
+
     print("mysql looks good")
 
 
