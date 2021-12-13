@@ -83,6 +83,7 @@ def get_trx(filename):
                 #print(l)
                 end_pos = l[7]
                 xid = l[-1]
+                #if transaction use auto commit ,then this end_time is not real time,it's same as begin time,so we need to check affected rows 
                 end_time = l[:2]
 
             if "COMMIT/*!*/;" in line:
