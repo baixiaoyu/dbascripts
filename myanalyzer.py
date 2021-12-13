@@ -16,6 +16,8 @@ except ImportError:
     except ImportError:
         print("Please install MySQLdb or PyMySQL")
         sys.exit(1)
+from warnings import filterwarnings
+filterwarnings('ignore',category=pymysql.Warning)
 
 msg = Printer(line_max=2000)
 BIG_TRANSACTION_TIME = 1
@@ -52,7 +54,7 @@ def connect(conf='~/.my.cnf', section='DEFAULT', host_ip="", port=""):
                 host = parser.get(section, 'host')
             return pymysql.connect(host=host, user=user, passwd=password, port=port)
     except Exception as e:
-        print("errors:%s" % e)
+        traceback.print_exc()
 
 
 def check_read_only(cursor):
@@ -94,7 +96,6 @@ def find_waiting_root_thread(cursor):
           "and c.LOCK_TYPE='SHARED_READ_ONLY' and c.LOCK_STATUS='GRANTED'"
     cursor.execute(sql)
     res = cursor.fetchall()
-    print("root thread===>",res)
 
     thread_id_list = []
     for row in res:
@@ -123,7 +124,7 @@ def get_bigtransactions(cursor):
         cursor.execute(sql)
         rows = cursor.fetchall()
     except Exception as e:
-        print("get_bigtransactions  error:%s" % e)
+        traceback.print_exc()
         cursor.close()
     sorted(rows, key=lambda keys: keys['trx_started'], reverse=True)
     return rows
@@ -147,7 +148,7 @@ def block_thread_info(cursor, id):
                       "bp.host                                          AS blocking_host," \
                       "bp.db                                            AS blocking_db," \
                       "CONCAT(bp.command, IF(bp.command = 'Sleep', CONCAT(' ', bp.time),   '')) AS blocking_status," \
-                      "CONCAT(lock_mode, ' ', lock_type, ' ', lock_table, '(', lock_index, ')') AS lock_info" \
+                      "CONCAT(lock_mode, ' ', lock_type, ' ', lock_table, '(', lock_index, ')') AS lock_info " \
                       "FROM INFORMATION_SCHEMA.INNODB_LOCK_WAITS w " \
                       "JOIN INFORMATION_SCHEMA.INNODB_TRX b   ON  b.trx_id  = w.blocking_trx_id " \
                       "JOIN INFORMATION_SCHEMA.INNODB_TRX r   ON  r.trx_id  = w.requesting_trx_id " \
@@ -159,7 +160,7 @@ def block_thread_info(cursor, id):
         cursor.execute(check_block_sql)
         rows = cursor.fetchall()
     except Exception as e:
-        print("get block_thread_info  error:%s" % e)
+        traceback.print_exc()
         cursor.close()
     return rows
 
@@ -224,7 +225,7 @@ def analyse_processlist(db, outfile, time=10):
         results = cursor.fetchall()
     except Exception as e:
         cursor.close()
-        print("can't connect to server get processlist info, errors:%s" % e)
+        traceback.print_exc()
 
     if len(results) == 0:
         print("mysql looks good")
@@ -239,7 +240,7 @@ def analyse_processlist(db, outfile, time=10):
     open_table_count = 0
 
     for row in results:
-        print(row["INFO"])
+
         prefix = row["INFO"][:20].lower()
         if prefix.startswith("update") or prefix.startswith("delete") or prefix.startswith("insert") and row[
             "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables",
@@ -272,7 +273,7 @@ def analyse_processlist(db, outfile, time=10):
         if row["STATE"] == "Waiting for commit lock":
             msg.fail("FLUSH TABLES WITH READ LOCK is waiting for a commit lock.")
         if row["STATE"] == "Sending data":
-            msg.fail("consider enlarge buffer pool or optimize sql")
+            msg.fail("consider enlarge buffer pool or optimize sql,maybe you query too many rows")
             msg.fail("info:",row["INFO"])
         if row["STATE"] == "Copying Waiting for global read lockto tmp table on disk":
             msg.fail("consider enlarge max_heap_table_size and tmp_table_size")
@@ -328,7 +329,6 @@ def analyse_processlist(db, outfile, time=10):
                             "INFO"])
                 else:
                     thread_info = find_waiting_root_thread(cursor)
-                    print("thread_info", thread_info)
                     msg.fail("thread {} hold  lock,kill it or find user".format(','.join('%s' %id for id in thread_info)))
             else:
                 msg.fail("performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
@@ -368,7 +368,7 @@ def analyse_processlist(db, outfile, time=10):
                 if dml_count > 10 and len(login_list) > 5:
                     msg.fail("may be disk is full, pls check disk free space!")
                 else:
-                    msg.fail("long sql is executing! sql is:" + row["INFO"])
+                    msg.fail("long sql is executing! id: {} user: {} host: {} sql is: {}".format(row["ID"],row["USER"],row["HOST"], row["INFO"]))
 
         if row["STATE"] == "Opening tables":
             if len(ddl_long_query) > 0:
@@ -439,7 +439,7 @@ def main():
     try:
         con = connect(opts.config, opts.section, host, port)
     except Exception as e:
-        print("connect db error:%s" % e)
+        traceback.print_exc()
         con.close()
 
 
