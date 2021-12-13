@@ -102,8 +102,15 @@ def find_waiting_root_thread(cursor):
         thread_id_list.append(row["id"])
     return thread_id_list
 
+
+def check_ps_mdl_lock_status(cursor):
+    ps = check_performance_schema(cursor)
+    mdl_enabled = check_setup_instruments_mdl(cursor)
+    return ps,mdl_enabled
+
+
 def show_open_tables_without_performance_schema(cursor):
-    sql = "show open tables"
+    sql = "show open tables where in_use>0"
     cursor.execute(sql)
     rows = cursor.fetchall()
     res = []
@@ -271,7 +278,20 @@ def analyse_processlist(db, outfile, time=10):
             msg.fail("consider optimize sql")
             msg.fail("info:", row["INFO"])
         if row["STATE"] == "Waiting for commit lock":
-            msg.fail("FLUSH TABLES WITH READ LOCK is waiting for a commit lock.")
+            msg.fail("transaction is  waiting for a commit lock.")
+            ps, mdl_enabled = check_ps_mdl_lock_status(cursor)
+            if ps == "ON" and mdl_enabled == "YES":
+                thread_info = findRootThread(cursor)
+                msg.fail("thread {} hold global lock,kill it or find user".format(
+                    ','.join('%s' % id for id in thread_info)))
+            elif mdl_enabled == "NO":
+                msg.fail(
+                    "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
+
+            elif ps != "ON":
+                msg.fail(
+                    "performance_schema does not open can't find which thread caused ,try to kill long sleep thread ")
+
         if row["STATE"] == "Sending data":
             msg.fail("consider enlarge buffer pool or optimize sql,maybe you query too many rows")
             msg.fail("info:",row["INFO"])
@@ -281,9 +301,6 @@ def analyse_processlist(db, outfile, time=10):
         if row["STATE"] == "Sending to client":
             msg.fail("Consider to enlarge  net_buffer_length or socket send buffer /proc/sys/net/core/wmem_default ,net_buffer_length  dynamically enlarged up to max_allowed_packet bytes as needed.")
         if row["STATE"] == "Waiting for global read lock":
-            msg.fail(
-                "FLUSH TABLES WITH READ LOCK is waiting for a global read lock or the global read_only system variable is being set.")
-
             if row["INFO"] == "flush tables with read lock":
                 msg.fail("flush tables with read lock is waiting read lock,you can kill long query and big trx")
                 show_long_query(select_long_query, dml_long_query, ddl_long_query)
@@ -291,27 +308,25 @@ def analyse_processlist(db, outfile, time=10):
             else:
                 open_tables_res = show_open_tables_without_performance_schema(cursor)
                 if len(open_tables_res) == 0:
-                    msg.fail("sql blocked by FLUSH TABLES WITH READ LOCK,try to kill thread which executed flush tables with read lock")
+                    msg.fail("sql blocked by FLUSH TABLES WITH READ LOCK,try to kill thread which executed flush tables with read lock. sql is {}".format(row["INFO"]))
+                    ps, mdl_enabled = check_ps_mdl_lock_status(cursor)
+                    if ps == "ON" and mdl_enabled == "YES":
+                        thread_info = findRootThread(cursor)
+                        msg.fail("thread {} hold global lock,kill it or find user".format(
+                            ','.join('%s' % id for id in thread_info)))
+                    elif mdl_enabled == "NO":
+                        msg.fail(
+                            "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
 
+                    elif ps != "ON":
+                        msg.fail(
+                            "performance_schema does not open can't find which thread caused ,try to kill long sleep thread ")
                 else:
                     msg.fail("sql blocked by other long query sql, blocked sql is :" + row["INFO"])
-                    ps = check_performance_schema(cursor)
-                    if ps == "ON":
-                        mdl_enabled = check_setup_instruments_mdl(cursor)
-                        if mdl_enabled == "NO":
-                            msg.fail(
-                                "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,blocked sql is: " +
-                                row[
-                                    "INFO"])
-                        else:
-                            thread_info = findRootThread(cursor)
-                            msg.fail("thread id hold global lock,kill it or find user", ','.join('%s' %id for id in thread_info))
-                    else:
-                        msg.fail(
-                            "performance_schema does not open can't find which thread caused ,Below are long query and big trx ")
+                    show_long_query(select_long_query, dml_long_query, ddl_long_query)
+                    show_big_transaction(bigtrx)
 
-                        show_long_query(select_long_query, dml_long_query, ddl_long_query)
-                        show_big_transaction(bigtrx)
+
 
         if row["STATE"] == "Waiting for tables":
             pass
@@ -319,19 +334,17 @@ def analyse_processlist(db, outfile, time=10):
             msg.fail(
                 "id :{}  {} is blocked by lock table statement or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],
                                                                                                 row["TIME"]))
-            ps = check_performance_schema(cursor)
-            if ps == "ON":
-                mdl_enabled = check_setup_instruments_mdl(cursor)
-                if mdl_enabled == "NO":
-                    msg.fail(
-                        "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,blocked sql is: " +
-                        row[
-                            "INFO"])
-                else:
-                    thread_info = find_waiting_root_thread(cursor)
-                    msg.fail("thread {} hold  lock,kill it or find user".format(','.join('%s' %id for id in thread_info)))
-            else:
-                msg.fail("performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
+            ps,mdl_enabled = check_ps_mdl_lock_status(cursor)
+            if ps == "ON" and mdl_enabled=="YES":
+                thread_info = find_waiting_root_thread(cursor)
+                msg.fail("thread {} hold  lock,kill it or find user".format(','.join('%s' % id for id in thread_info)))
+            elif mdl_enabled!="YES":
+                msg.fail(
+                    "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused")
+            elif ps != "ON":
+                msg.fail(
+                    "performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
+
 
         if row["STATE"] == "Waiting for table metadata lock":
             msg.fail("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
