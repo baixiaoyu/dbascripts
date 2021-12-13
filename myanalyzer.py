@@ -59,6 +59,43 @@ def check_read_only(cursor):
     cursor.execute(sql)
     return cursor.fetchall()[0]["Value"]
 
+def check_performance_schema(cursor):
+    sql = " show variables like 'performance_schema'"
+    cursor.execute(sql)
+    return cursor.fetchall()[0]["Value"]
+
+def check_setup_instruments_mdl(cursor):
+    sql = "select * from performance_schema.setup_instruments  where NAME ='wait/lock/metadata/sql/mdl'"
+    cursor.execute(sql)
+    return cursor.fetchall()[0]["ENABLED"]
+
+def findRootThread(cursor):
+    sql = "SELECT B.id,B.User,B.Host,B.db,b.Command,b.Time,C.OWNER_THREAD_ID,C.OBJECT_TYPE," \
+          "C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
+          "FROM performance_schema.threads A ,information_schema.PROCESSLIST B ," \
+          "performance_schema.metadata_locks C " \
+          "WHERE A.PROCESSLIST_ID = B.ID AND " \
+          "A.THREAD_ID = C.OWNER_THREAD_ID " \
+          "and c.LOCK_STATUS<>'PENDING' and c.OBJECT_TYPE='GLOBAL'"
+    cursor.execute(sql)
+    res = cursor.fetchall()
+    thread_id_list = []
+    for row in res:
+        thread_id_list.append(row["id"])
+    return thread_id_list
+
+def find_waiting_root_thread(cursor):
+    sql = "SELECT B.id,B.User,B.Host,B.db,b.Command,b.Time,C.OWNER_THREAD_ID," \
+          "C.OBJECT_TYPE,C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
+          "FROM performance_schema.threads A ,information_schema.PROCESSLIST B ,performance_schema.metadata_locks C " \
+          "WHERE A.PROCESSLIST_ID = B.ID AND A.THREAD_ID = C.OWNER_THREAD_ID " \
+          "and c.OWNER_THREAD_ID!=sys.ps_thread_id(connection_id()) " \
+          "and c.LOCK_TYPE='SHARED_READ_ONLY' and c.LOCK_STATUS='GRANTED'"
+    res = cursor.fetchall()
+    thread_id_list = []
+    for row in res:
+        thread_id_list.append(row["id"])
+    return thread_id_list
 
 def show_open_tables_without_performance_schema(cursor):
     sql = "show open tables"
@@ -178,7 +215,7 @@ def show_big_transaction(bigtrx_list):
 def analyse_processlist(db, outfile, time=10):
     try:
         cursor = db.cursor(pymysql.cursors.DictCursor)
-        sql = "select * from information_schema.processlist where time>{} and COMMAND <>'Sleep' ".format(time)
+        sql = "select * from information_schema.processlist where time>={} and COMMAND <>'Sleep' ".format(time)
         cursor.execute(sql)
         results = cursor.fetchall()
     except Exception as e:
@@ -219,6 +256,8 @@ def analyse_processlist(db, outfile, time=10):
 
         if row["STATE"] == "Rolling back":
             msg.fail("transaction is rolling back")
+        if row["STATE"] == "statistics":
+            msg.fail("keep statistics up to date")
         if row["STATE"] == "Creating sort index":
             msg.fail("consider optimize sql")
             msg.fail("info:", row["INFO"])
@@ -227,7 +266,7 @@ def analyse_processlist(db, outfile, time=10):
         if row["STATE"] == "Sending data":
             msg.fail("consider enlarge buffer pool or optimize sql")
             msg.fail("info:",row["INFO"])
-        if row["STATE"] == "Copying to tmp table on disk":
+        if row["STATE"] == "Copying Waiting for global read lockto tmp table on disk":
             msg.fail("consider enlarge max_heap_table_size and tmp_table_size")
             msg.fail("info:", row["INFO"])
         if row["STATE"] == "Sending to client":
@@ -237,18 +276,33 @@ def analyse_processlist(db, outfile, time=10):
                 "FLUSH TABLES WITH READ LOCK is waiting for a global read lock or the global read_only system variable is being set.")
 
             if row["INFO"] == "flush tables with read lock":
-                msg.fail("flush tables with read lock is waiting read lock,you can kill long query")
+                msg.fail("flush tables with read lock is waiting read lock,you can kill long query and big trx")
                 show_long_query(select_long_query, dml_long_query, ddl_long_query)
                 show_big_transaction(bigtrx)
             else:
                 open_tables_res = show_open_tables_without_performance_schema(cursor)
                 if len(open_tables_res) == 0:
-                    msg.fail("sql blocked by FLUSH TABLES WITH READ LOCK")
-                    msg.fail("blocked sql is: " + row["INFO"])
+                    msg.fail("sql blocked by FLUSH TABLES WITH READ LOCK,try to kill thread which executed flush tables with read lock")
+
                 else:
                     msg.fail("sql blocked by other long query sql, blocked sql is :" + row["INFO"])
-                    show_long_query(select_long_query, dml_long_query, ddl_long_query)
-                    show_big_transaction(bigtrx)
+                    ps = check_performance_schema(cursor)
+                    if ps == "ON":
+                        mdl_enabled = check_setup_instruments_mdl(cursor)
+                        if mdl_enabled == "NO":
+                            msg.fail(
+                                "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,blocked sql is: " +
+                                row[
+                                    "INFO"])
+                        else:
+                            thread_info = findRootThread(cursor)
+                            msg.fail("thread id hold global lock,kill it or find user", ''.join(thread_info))
+                    else:
+                        msg.fail(
+                            "performance_schema does not open can't find which thread caused ,Below are long query and big trx ")
+
+                        show_long_query(select_long_query, dml_long_query, ddl_long_query)
+                        show_big_transaction(bigtrx)
 
         if row["STATE"] == "Waiting for tables":
             pass
@@ -256,14 +310,26 @@ def analyse_processlist(db, outfile, time=10):
             msg.fail(
                 "id :{}  {}is blocked by lock table or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],
                                                                                                 row["TIME"]))
-            # show lock table thread and long query info
-            show_long_query(select_long_query, dml_long_query, ddl_long_query)
-            show_big_transaction(bigtrx)
+            ps = check_performance_schema(cursor)
+            if ps == "ON":
+                mdl_enabled = check_setup_instruments_mdl(cursor)
+                if mdl_enabled == "NO":
+                    msg.fail(
+                        "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,blocked sql is: " +
+                        row[
+                            "INFO"])
+                else:
+                    thread_info = find_waiting_root_thread(cursor)
+                    msg.fail("thread id hold  lock,kill it or find user", ''.join(thread_info))
+            else:
+                msg.fail("performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
+
         if row["STATE"] == "Waiting for table metadata lock":
             msg.fail("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
                                                                                                row["TIME"]))
             # show long query and check big transaction
             # query processlist according table name
+            # 需要合并下，针对非常多的等待，需要找到根阻塞，可以先根据表名找慢查询，没有然后在用时间对比去找长事务
             show_long_query(select_long_query, dml_long_query, ddl_long_query)
             show_big_transaction(bigtrx)
         if row["STATE"] == "updating":
