@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 import argparse
+import traceback
 from urllib import parse
 import os
 import sys
@@ -91,7 +92,10 @@ def find_waiting_root_thread(cursor):
           "WHERE A.PROCESSLIST_ID = B.ID AND A.THREAD_ID = C.OWNER_THREAD_ID " \
           "and c.OWNER_THREAD_ID!=sys.ps_thread_id(connection_id()) " \
           "and c.LOCK_TYPE='SHARED_READ_ONLY' and c.LOCK_STATUS='GRANTED'"
+    cursor.execute(sql)
     res = cursor.fetchall()
+    print("root thread===>",res)
+
     thread_id_list = []
     for row in res:
         thread_id_list.append(row["id"])
@@ -222,6 +226,9 @@ def analyse_processlist(db, outfile, time=10):
         cursor.close()
         print("can't connect to server get processlist info, errors:%s" % e)
 
+    if len(results) == 0:
+        print("mysql looks good")
+
     bigtrx = get_bigtransactions(cursor)
 
     dml_long_query = []
@@ -232,7 +239,8 @@ def analyse_processlist(db, outfile, time=10):
     open_table_count = 0
 
     for row in results:
-        prefix = row["INFO"][20].lower()
+        print(row["INFO"])
+        prefix = row["INFO"][:20].lower()
         if prefix.startswith("update") or prefix.startswith("delete") or prefix.startswith("insert") and row[
             "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables",
                          "executing", "updating main table", "updating reference tables","Searching rows for update"]:
@@ -252,7 +260,7 @@ def analyse_processlist(db, outfile, time=10):
                 login_list.append(row)
 
     for row in results:
-        print >> outfile, row
+        # print >> outfile, row
 
         if row["STATE"] == "Rolling back":
             msg.fail("transaction is rolling back")
@@ -296,7 +304,7 @@ def analyse_processlist(db, outfile, time=10):
                                     "INFO"])
                         else:
                             thread_info = findRootThread(cursor)
-                            msg.fail("thread id hold global lock,kill it or find user", ''.join(thread_info))
+                            msg.fail("thread id hold global lock,kill it or find user", ','.join('%s' %id for id in thread_info))
                     else:
                         msg.fail(
                             "performance_schema does not open can't find which thread caused ,Below are long query and big trx ")
@@ -308,7 +316,7 @@ def analyse_processlist(db, outfile, time=10):
             pass
         if row["STATE"] == "Waiting for table flush":
             msg.fail(
-                "id :{}  {}is blocked by lock table or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],
+                "id :{}  {} is blocked by lock table statement or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],
                                                                                                 row["TIME"]))
             ps = check_performance_schema(cursor)
             if ps == "ON":
@@ -320,7 +328,8 @@ def analyse_processlist(db, outfile, time=10):
                             "INFO"])
                 else:
                     thread_info = find_waiting_root_thread(cursor)
-                    msg.fail("thread id hold  lock,kill it or find user", ''.join(thread_info))
+                    print("thread_info", thread_info)
+                    msg.fail("thread {} hold  lock,kill it or find user".format(','.join('%s' %id for id in thread_info)))
             else:
                 msg.fail("performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
 
@@ -370,7 +379,7 @@ def analyse_processlist(db, outfile, time=10):
                 msg.fail(
                     "increase table_open_cache or decrease tables in sql or decrease sql parrallel execution or disk performance is not good")
 
-    print("mysql looks good")
+
 
 
 def build_option_parser():
@@ -444,9 +453,11 @@ def main():
         try:
             analyse_processlist(con, outfile, time)
         except Exception as ex:
-            print("analyse_processlist error:%s" % ex)
-    outfile.close()
-    con.close()
+            traceback.print_exc()
+    if outfile != None:
+        outfile.close()
+    if con != None:
+        con.close()
 
 if __name__ == '__main__':
     main()
