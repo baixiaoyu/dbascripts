@@ -72,35 +72,48 @@ def check_setup_instruments_mdl(cursor):
     cursor.execute(sql)
     return cursor.fetchall()[0]["ENABLED"]
 
-def findRootThread(cursor):
-    sql = "SELECT B.id,B.User,B.Host,B.db,b.Command,b.Time,C.OWNER_THREAD_ID,C.OBJECT_TYPE," \
-          "C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
-          "FROM performance_schema.threads A ,information_schema.PROCESSLIST B ," \
-          "performance_schema.metadata_locks C " \
-          "WHERE A.PROCESSLIST_ID = B.ID AND " \
-          "A.THREAD_ID = C.OWNER_THREAD_ID " \
-          "and c.LOCK_STATUS<>'PENDING' and c.OBJECT_TYPE='GLOBAL'"
+def check_setup_consumers_instrumentation(cursor):
+    sql = "select * from performance_schema.setup_consumers  where NAME ='global_instrumentation'"
     cursor.execute(sql)
-    res = cursor.fetchall()
-    thread_id_list = []
-    for row in res:
-        thread_id_list.append(row["id"])
-    return thread_id_list
+    return cursor.fetchall()[0]["ENABLED"]
+
+
+def show_mdl_lock_info(rows):
+    data = []
+    for row in rows:
+        data.append((row["ID"], row["USER"], row["HOST"], row["DB"], row["COMMAND"], row["TIME"], row["OWNER_THREAD_ID"],
+                     row["OBJECT_TYPE"],row["OBJECT_SCHEMA"], row["OBJECT_NAME"],row["LOCK_TYPE"],row["LOCK_DURATION"],row["LOCK_STATUS"]))
+    header = (
+        "ID", "USER", "HOST", "DB", "COMMAND", "TIME",
+        "OWNER_THREAD_ID", "OBJECT_TYPE", "OBJECT_SCHEMA", "OBJECT_NAME","LOCK_TYPE","LOCK_DURATION","LOCK_STATUS")
+    formatted = table(data, header=header, divider=True)
+    print(formatted)
+
+# def findRootThread(cursor):
+#     sql = "SELECT B.ID,B.USER,B.HOST,B.DB,b.COMMAND,b.TIME,C.OWNER_THREAD_ID,C.OBJECT_TYPE,c.OBJECT_SCHEMA,c.OBJECT_NAME," \
+#           "C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
+#           "FROM performance_schema.threads A ,information_schema.PROCESSLIST B ," \
+#           "performance_schema.metadata_locks C " \
+#           "WHERE A.PROCESSLIST_ID = B.ID AND " \
+#           "A.THREAD_ID = C.OWNER_THREAD_ID " \
+#           "and c.LOCK_STATUS<>'PENDING' and c.OBJECT_TYPE='GLOBAL'"
+#     cursor.execute(sql)
+#     res = cursor.fetchall()
+#
+#     show_mdl_lock_info(res)
 
 def find_waiting_root_thread(cursor):
-    sql = "SELECT B.id,B.User,B.Host,B.db,b.Command,b.Time,C.OWNER_THREAD_ID," \
-          "C.OBJECT_TYPE,C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
-          "FROM performance_schema.threads A ,information_schema.PROCESSLIST B ,performance_schema.metadata_locks C " \
+    sql = "SELECT B.ID,B.USER,B.HOST,B.DB,b.COMMAND,b.TIME,C.OWNER_THREAD_ID,C.OBJECT_TYPE,c.OBJECT_SCHEMA," \
+          "c.OBJECT_NAME,C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
+          "FROM performance_schema.threads A, information_schema.PROCESSLIST B," \
+          "performance_schema.metadata_locks C " \
           "WHERE A.PROCESSLIST_ID = B.ID AND A.THREAD_ID = C.OWNER_THREAD_ID " \
-          "and c.OWNER_THREAD_ID!=sys.ps_thread_id(connection_id()) " \
-          "and c.LOCK_TYPE='SHARED_READ_ONLY' and c.LOCK_STATUS='GRANTED'"
+          "and c.OWNER_THREAD_ID!=sys.ps_thread_id(connection_id())  and c.LOCK_STATUS='GRANTED'"
+    print(sql)
     cursor.execute(sql)
     res = cursor.fetchall()
 
-    thread_id_list = []
-    for row in res:
-        thread_id_list.append(row["id"])
-    return thread_id_list
+    show_mdl_lock_info(res)
 
 
 def check_ps_mdl_lock_status(cursor):
@@ -174,10 +187,9 @@ def block_thread_info(cursor, id):
 
 def output_sql_table_format(rows):
     data = []
-    for data in rows:
-        data.append((data["ID"], data["USER"], data["HOST"], data["DB"], data["COMMAND"], data["TIME"], data["STATE"],
-                     data["INFO"],
-                     data["ROWS_SENT"], data["ROWS_EXAMINED"]))
+    for row in rows:
+        data.append((row["ID"], row["USER"], row["HOST"], row["DB"], row["COMMAND"], row["TIME"], row["STATE"],
+                     row["INFO"],row["ROWS_SENT"], row["ROWS_EXAMINED"]))
     header = (
         "ID", "USER", "HOST", "DB", "COMMAND", "TIME",
         "STATE", "INFO", "ROWS_SENT", "ROWS_EXAMINED")
@@ -188,21 +200,24 @@ def output_sql_table_format(rows):
 def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
     if len(select_long_query) > SELECT_SHOW_LIMIT:
         msg.fail("Select long query number greater than 5, so just show top 5 select sql")
-        sorted(select_long_query, key=lambda keys: keys['TIME'], reverse=True)
-        select_long_query = select_long_query[:5]
+    sorted(select_long_query, key=lambda keys: keys['TIME'], reverse=True)
+    select_long_query = select_long_query[:5]
+    if len(select_long_query) !=0:
         output_sql_table_format(select_long_query)
 
     if len(dml_long_query) > DML_SHOW_LIMIT:
         msg.fail("DML long query number greater than 5, so just show top 5 dml sql")
-        sorted(dml_long_query, key=lambda keys: keys['TIME'], reverse=True)
-        select_long_query = select_long_query[:5]
-        output_sql_table_format(select_long_query)
+    sorted(dml_long_query, key=lambda keys: keys['TIME'], reverse=True)
+    dml_long_query = dml_long_query[:5]
+    if len(dml_long_query) != 0:
+        output_sql_table_format(dml_long_query)
 
     if len(ddl_long_query) > DDL_SHOW_LIMIT:
         msg.fail("DDL long query number greater than 5, so just show top 5 ddl sql")
-        sorted(ddl_long_query, key=lambda keys: keys['TIME'], reverse=True)
-        ddl_long_query = select_long_query[:5]
-        output_sql_table_format(select_long_query)
+    sorted(ddl_long_query, key=lambda keys: keys['TIME'], reverse=True)
+    ddl_long_query = ddl_long_query[:5]
+    if len(ddl_long_query) !=0:
+        output_sql_table_format(ddl_long_query)
 
 
 def show_big_transaction(bigtrx_list):
@@ -250,10 +265,10 @@ def analyse_processlist(db, outfile, time=10):
 
         prefix = row["INFO"][:20].lower()
         if prefix.startswith("update") or prefix.startswith("delete") or prefix.startswith("insert") and row[
-            "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables",
+            "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables","User sleep",
                          "executing", "updating main table", "updating reference tables","Searching rows for update"]:
             dml_long_query.append(row)
-        elif prefix.startswith("select") and row["STATE"] in ["Sending data", "Copying to tmp table",
+        elif prefix.startswith("select") and row["STATE"] in ["Sending data", "Copying to tmp table","User sleep",
                                                               "Copying to tmp table on disk", "Creating sort index",
                                                               "executing", "Sorting for group", "Sorting for order",
                                                               "Sorting result","removing tmp table","Sending to client"]:
@@ -281,9 +296,9 @@ def analyse_processlist(db, outfile, time=10):
             msg.fail("transaction is  waiting for a commit lock.")
             ps, mdl_enabled = check_ps_mdl_lock_status(cursor)
             if ps == "ON" and mdl_enabled == "YES":
-                thread_info = findRootThread(cursor)
-                msg.fail("thread {} hold global lock,kill it or find user".format(
-                    ','.join('%s' % id for id in thread_info)))
+                msg.fail("try to kill thread")
+                find_waiting_root_thread(cursor)
+
             elif mdl_enabled == "NO":
                 msg.fail(
                     "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
@@ -311,9 +326,9 @@ def analyse_processlist(db, outfile, time=10):
                     msg.fail("sql blocked by FLUSH TABLES WITH READ LOCK,try to kill thread which executed flush tables with read lock. sql is {}".format(row["INFO"]))
                     ps, mdl_enabled = check_ps_mdl_lock_status(cursor)
                     if ps == "ON" and mdl_enabled == "YES":
-                        thread_info = findRootThread(cursor)
-                        msg.fail("thread {} hold global lock,kill it or find user".format(
-                            ','.join('%s' % id for id in thread_info)))
+                        msg.fail("try to kill thred")
+                        find_waiting_root_thread(cursor)
+
                     elif mdl_enabled == "NO":
                         msg.fail(
                             "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
@@ -336,15 +351,17 @@ def analyse_processlist(db, outfile, time=10):
                                                                                                 row["TIME"]))
             ps,mdl_enabled = check_ps_mdl_lock_status(cursor)
             if ps == "ON" and mdl_enabled=="YES":
-                thread_info = find_waiting_root_thread(cursor)
-                msg.fail("thread {} hold  lock,kill it or find user".format(','.join('%s' % id for id in thread_info)))
+                msg.fail("kill it thread")
+                find_waiting_root_thread(cursor)
+
             elif mdl_enabled!="YES":
                 msg.fail(
                     "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused")
             elif ps != "ON":
                 msg.fail(
                     "performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
-
+            show_long_query(select_long_query,dml_long_query,ddl_long_query)
+            show_big_transaction(bigtrx)
 
         if row["STATE"] == "Waiting for table metadata lock":
             msg.fail("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
