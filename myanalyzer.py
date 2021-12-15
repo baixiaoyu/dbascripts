@@ -79,6 +79,7 @@ def check_setup_consumers_instrumentation(cursor):
 
 
 def show_mdl_lock_info(rows):
+    sorted(rows, key=lambda keys: keys['Time'], reverse=True)
     data = []
     for row in rows:
         data.append((row["ID"], row["USER"], row["HOST"], row["DB"], row["COMMAND"], row["TIME"], row["OWNER_THREAD_ID"],
@@ -89,19 +90,6 @@ def show_mdl_lock_info(rows):
     formatted = table(data, header=header, divider=True)
     print(formatted)
 
-# def findRootThread(cursor):
-#     sql = "SELECT B.ID,B.USER,B.HOST,B.DB,b.COMMAND,b.TIME,C.OWNER_THREAD_ID,C.OBJECT_TYPE,c.OBJECT_SCHEMA,c.OBJECT_NAME," \
-#           "C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
-#           "FROM performance_schema.threads A ,information_schema.PROCESSLIST B ," \
-#           "performance_schema.metadata_locks C " \
-#           "WHERE A.PROCESSLIST_ID = B.ID AND " \
-#           "A.THREAD_ID = C.OWNER_THREAD_ID " \
-#           "and c.LOCK_STATUS<>'PENDING' and c.OBJECT_TYPE='GLOBAL'"
-#     cursor.execute(sql)
-#     res = cursor.fetchall()
-#
-#     show_mdl_lock_info(res)
-
 def find_waiting_root_thread(cursor):
     sql = "SELECT B.ID,B.USER,B.HOST,B.DB,b.COMMAND,b.TIME,C.OWNER_THREAD_ID,C.OBJECT_TYPE,c.OBJECT_SCHEMA," \
           "c.OBJECT_NAME,C.LOCK_TYPE,C.LOCK_DURATION,C.LOCK_STATUS " \
@@ -109,10 +97,13 @@ def find_waiting_root_thread(cursor):
           "performance_schema.metadata_locks C " \
           "WHERE A.PROCESSLIST_ID = B.ID AND A.THREAD_ID = C.OWNER_THREAD_ID " \
           "and c.OWNER_THREAD_ID!=sys.ps_thread_id(connection_id())  and c.LOCK_STATUS='GRANTED'"
-    print(sql)
-    cursor.execute(sql)
-    res = cursor.fetchall()
 
+    try:
+        cursor.execute(sql)
+        res = cursor.fetchall()
+    except Exception as e:
+        traceback.print_exc()
+        cursor.close()
     show_mdl_lock_info(res)
 
 
@@ -242,7 +233,7 @@ def show_big_transaction(bigtrx_list):
 def analyse_processlist(db, outfile, time=10):
     try:
         cursor = db.cursor(pymysql.cursors.DictCursor)
-        sql = "select * from information_schema.processlist where time>={} and COMMAND <>'Sleep' ".format(time)
+        sql = "select * from information_schema.processlist where time>={} and user <> 'system user' and  COMMAND <>'Sleep' ".format(time)
         cursor.execute(sql)
         results = cursor.fetchall()
     except Exception as e:
@@ -287,6 +278,13 @@ def analyse_processlist(db, outfile, time=10):
 
         if row["STATE"] == "Rolling back":
             msg.fail("transaction is rolling back")
+        if row["STATE"] == "deleting from reference tables":
+            msg.fail("The server is executing the second part of a multiple-table delete and deleting the matched rows from the other tables. consider optimize sql")
+        if row["STATE"] == "Receiving from client" or row["STATE"] == "Reading from net":
+            msg.fail("check skip-name-resolve setting or check your network")
+        if row["STATE"] == "System lock":
+            msg.fail("check io performance,check if slave is executing sql,check table structure")
+            show_long_query(select_long_query, dml_long_query, ddl_long_query)
         if row["STATE"] == "statistics":
             msg.fail("keep statistics up to date")
         if row["STATE"] == "Creating sort index":
@@ -298,21 +296,18 @@ def analyse_processlist(db, outfile, time=10):
             if ps == "ON" and mdl_enabled == "YES":
                 msg.fail("try to kill thread")
                 find_waiting_root_thread(cursor)
-
             elif mdl_enabled == "NO":
                 msg.fail(
                     "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
-
             elif ps != "ON":
                 msg.fail(
                     "performance_schema does not open can't find which thread caused ,try to kill long sleep thread ")
-
         if row["STATE"] == "Sending data":
             msg.fail("consider enlarge buffer pool or optimize sql,maybe you query too many rows")
             msg.fail("info:",row["INFO"])
-        if row["STATE"] == "Copying Waiting for global read lockto tmp table on disk":
-            msg.fail("consider enlarge max_heap_table_size and tmp_table_size")
-            msg.fail("info:", row["INFO"])
+        if row["STATE"] == "Copying to tmp table on disk" or row["STATE"] == "Copying to tmp table":
+            msg.fail("consider enlarge max_heap_table_size and tmp_table_size,but most important is optimize sql")
+            msg.fail("sql info:", row["INFO"])
         if row["STATE"] == "Sending to client":
             msg.fail("Consider to enlarge  net_buffer_length or socket send buffer /proc/sys/net/core/wmem_default ,net_buffer_length  dynamically enlarged up to max_allowed_packet bytes as needed.")
         if row["STATE"] == "Waiting for global read lock":
@@ -340,9 +335,6 @@ def analyse_processlist(db, outfile, time=10):
                     msg.fail("sql blocked by other long query sql, blocked sql is :" + row["INFO"])
                     show_long_query(select_long_query, dml_long_query, ddl_long_query)
                     show_big_transaction(bigtrx)
-
-
-
         if row["STATE"] == "Waiting for tables":
             pass
         if row["STATE"] == "Waiting for table flush":
@@ -471,9 +463,7 @@ def main():
     except Exception as e:
         traceback.print_exc()
         con.close()
-
-
-
+        
     action = opts.action
     if action == "show":
         pass
