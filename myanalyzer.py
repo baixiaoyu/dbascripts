@@ -274,10 +274,10 @@ def analyse_processlist(db, outfile, time=10):
                 login_list.append(row)
 
     for row in results:
-        # print >> outfile, row
-
         if row["STATE"] == "Rolling back":
             msg.fail("transaction is rolling back")
+        if row["USER"] == "unauthenticated user":
+            msg.fail("pls check skip-name-resolve setting or threadpool setting or check network from client ip to mysql server or check application from client ip")
         if row["STATE"] == "deleting from reference tables":
             msg.fail("The server is executing the second part of a multiple-table delete and deleting the matched rows from the other tables. consider optimize sql")
         if row["STATE"] == "Receiving from client" or row["STATE"] == "Reading from net":
@@ -463,7 +463,7 @@ def main():
     except Exception as e:
         traceback.print_exc()
         con.close()
-        
+
     action = opts.action
     if action == "show":
         pass
