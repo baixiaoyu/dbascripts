@@ -12,7 +12,8 @@ common use tools for dba
     * you can add it to daily task
 
 * myanalyzer.py is a processlist analyzer
-    *  can show the root cause of thread blocked
+    *  used for trouble shooting
+    *  give the root cause of why mysql become slow by analyzing show processlist
     
 
 
