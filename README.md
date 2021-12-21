@@ -1,6 +1,6 @@
 ##About this project
 
-* common use tools for dba
+* common used tools for dba
 
 ##tools
 
