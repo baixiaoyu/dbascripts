@@ -6,6 +6,7 @@ from urllib import parse
 import os
 import sys
 
+import click as click
 from sqlparse.sql import IdentifierList, Identifier, Function
 from sqlparse.tokens import Punctuation, Keyword, DML
 from wasabi import Printer, table
@@ -29,7 +30,7 @@ SELECT_SHOW_LIMIT = 5
 DML_SHOW_LIMIT = 5
 DDL_SHOW_LIMIT = 5
 
-#for table output ,we can try to use cli_helper 
+#for table output ,we can try to use cli_helper
 
 def connect(conf='~/.my.cnf', section='DEFAULT', host_ip="", port=""):
     """
@@ -60,6 +61,37 @@ def connect(conf='~/.my.cnf', section='DEFAULT', host_ip="", port=""):
             return pymysql.connect(host=host, user=user, passwd=password, port=port)
     except Exception as e:
         traceback.print_exc()
+
+class ConfirmBoolParamType(click.ParamType):
+    name = 'confirmation'
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, bool):
+            return bool(value)
+        value = value.lower()
+        if value in ('yes', 'y'):
+            return True
+        elif value in ('no', 'n'):
+            return False
+        self.fail('%s is not a valid boolean' % value, param, ctx)
+
+    def __repr__(self):
+        return 'BOOL'
+
+BOOLEAN_TYPE = ConfirmBoolParamType()
+
+def confirm_kill_query():
+    prompt_text = ("You're about to kill long query or big transactions.\n"
+                   "Do you want to proceed? (y/n)")
+    return prompt(prompt_text, type=BOOLEAN_TYPE)
+
+def prompt(*args, **kwargs):
+    """Prompt the user for input and handle any abort exceptions."""
+    try:
+        return click.prompt(*args, **kwargs)
+    except click.Abort:
+        return False
+
 
 def is_subselect(parsed):
     if not parsed.is_group:
@@ -163,6 +195,15 @@ def check_read_only(cursor):
     sql = " show variables like 'read_only'"
     cursor.execute(sql)
     return cursor.fetchall()[0]["Value"]
+
+def kill_long_query_big_trx(cursor,ids):
+    try:
+        for id in ids:
+            sql = "kill " +id
+            cursor.execute(sql)
+    except Exception as e:
+        traceback.print_exc()
+        cursor.close()
 
 def check_performance_schema(cursor):
     sql = " show variables like 'performance_schema'"
@@ -385,8 +426,13 @@ def analyse_processlist(db, outfile, time=10):
         if row["STATE"] == "Receiving from client" or row["STATE"] == "Reading from net":
             msg.fail("check skip-name-resolve setting or check your network")
         if row["STATE"] == "System lock":
-            msg.fail("check io performance,check if slave is executing sql,check table structure")
-            show_long_query(select_long_query, dml_long_query, ddl_long_query)
+            msg.fail("check io performance,maybe long query is running ,check table primary key setting")
+            ids = show_long_query(select_long_query, dml_long_query, ddl_long_query)
+            kill = confirm_kill_query()
+            if kill == True:
+                kill_long_query_big_trx(cursor, ids)
+            else:
+                click.echo("do noting")
         if row["STATE"] == "statistics":
             msg.fail("keep statistics up to date")
         if row["STATE"] == "Creating sort index":
@@ -462,7 +508,7 @@ def analyse_processlist(db, outfile, time=10):
                                                                                                row["TIME"]))
             # show long query and check big transaction
             # query processlist according table name
-            # we need to more specific, try to find long query by table_name
+            # 需要合并下，针对非常多的等待，需要找到根阻塞，可以先根据表名找慢查询，没有然后在用时间对比去找长事务
             show_long_query(select_long_query, dml_long_query, ddl_long_query)
             show_big_transaction(bigtrx)
         if row["STATE"] == "updating":
