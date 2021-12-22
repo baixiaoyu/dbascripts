@@ -25,12 +25,12 @@ from warnings import filterwarnings
 filterwarnings('ignore',category=pymysql.Warning)
 
 msg = Printer(line_max=2000)
-BIG_TRANSACTION_TIME = 1
+BIG_TRANSACTION_TIME = 10
 SELECT_SHOW_LIMIT = 5
 DML_SHOW_LIMIT = 5
 DDL_SHOW_LIMIT = 5
 
-#for table output ,we can try to use cli_helper
+#for table output ,we can try to use cli_helper for long output
 
 def connect(conf='~/.my.cnf', section='DEFAULT', host_ip="", port=""):
     """
@@ -80,10 +80,26 @@ class ConfirmBoolParamType(click.ParamType):
 
 BOOLEAN_TYPE = ConfirmBoolParamType()
 
-def confirm_kill_query():
-    prompt_text = ("You're about to kill long query or big transactions.\n"
-                   "Do you want to proceed? (y/n)")
-    return prompt(prompt_text, type=BOOLEAN_TYPE)
+def confirm_kill(type):
+    if type == "query":
+        prompt_text = ("You're about to kill long query select.\n"
+                       "Do you want to proceed? (y/n)")
+    elif type == "dml":
+        prompt_text = ("You're about to kill long query dml.\n"
+                       "Do you want to proceed? (y/n)")
+    elif type == "ddl":
+        prompt_text = ("You're about to kill long  ddl.\n"
+                       "Do you want to proceed? (y/n)")
+    elif type == "mdl":
+        prompt_text = ("You're about to kill mdl lock thread.\n"
+                       "Do you want to proceed? (y/n)")
+    elif type == "bigtrx":
+        prompt_text = ("You're about to kill long transaction.\n"
+                       "Do you want to proceed? (y/n)")
+    res = prompt(prompt_text, type=BOOLEAN_TYPE)
+
+    return res
+
 
 def prompt(*args, **kwargs):
     """Prompt the user for input and handle any abort exceptions."""
@@ -191,15 +207,36 @@ def extract_tables(sql):
     return list(extract_table_identifiers(stream))
 
 
+def show_processlist(db):
+    try:
+        cursor = db.cursor(pymysql.cursors.DictCursor)
+        sql = "select * from information_schema.processlist"
+        cursor.execute(sql)
+        results = cursor.fetchall()
+
+        output_sql_table_format(results)
+    except Exception as e:
+        traceback.print_exc()
+    finally:
+        cursor.close()
+        db.close()
+
 def check_read_only(cursor):
     sql = " show variables like 'read_only'"
     cursor.execute(sql)
     return cursor.fetchall()[0]["Value"]
 
-def kill_long_query_big_trx(cursor,ids):
+def check_is_slave(cursor):
+    sql = " show slave status"
+    result = cursor.execute(sql)
+    if len(result) >0:
+        return True
+
+def kill_thread(cursor,ids):
     try:
         for id in ids:
-            sql = "kill " +id
+            sql = "kill " + str(id)
+            print(sql)
             cursor.execute(sql)
     except Exception as e:
         traceback.print_exc()
@@ -273,15 +310,18 @@ def get_bigtransactions(cursor):
           "trx_tables_locked,trx_isolation_level,user,host,db ,info " \
           "from information_schema.innodb_trx a, information_schema.processlist b " \
           "where a.trx_mysql_thread_id=b.id " \
-          "and a.trx_started < date_sub(now(), interval {0} minute)".format(BIG_TRANSACTION_TIME)
+          "and a.trx_started < date_sub(now(), interval {0} SECOND)".format(BIG_TRANSACTION_TIME)
+
     try:
         cursor.execute(sql)
         rows = cursor.fetchall()
+        ids = [row["trx_mysql_thread_id"] for row in rows]
+
     except Exception as e:
         traceback.print_exc()
         cursor.close()
     sorted(rows, key=lambda keys: keys['trx_started'], reverse=True)
-    return rows
+    return rows,ids
 
 
 def block_thread_info(cursor, id):
@@ -333,32 +373,32 @@ def output_sql_table_format(rows):
 
 def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
     if len(select_long_query) > SELECT_SHOW_LIMIT:
-        msg.fail("Select long query number greater than 5, so just show top 5 select sql")
+        msg.fail("Select long query number greater than SELECT_SHOW_LIMIT, so just show top SELECT_SHOW_LIMIT select sql")
     sorted(select_long_query, key=lambda keys: keys['TIME'], reverse=True)
-    select_long_query = select_long_query[:5]
+    select_long_query = select_long_query[:SELECT_SHOW_LIMIT]
     if len(select_long_query) !=0:
         output_sql_table_format(select_long_query)
 
     if len(dml_long_query) > DML_SHOW_LIMIT:
-        msg.fail("DML long query number greater than 5, so just show top 5 dml sql")
+        msg.fail("DML long query number greater than DML_SHOW_LIMIT, so just show top DML_SHOW_LIMIT dml sql")
     sorted(dml_long_query, key=lambda keys: keys['TIME'], reverse=True)
-    dml_long_query = dml_long_query[:5]
+    dml_long_query = dml_long_query[:DML_SHOW_LIMIT]
     if len(dml_long_query) != 0:
         output_sql_table_format(dml_long_query)
 
     if len(ddl_long_query) > DDL_SHOW_LIMIT:
-        msg.fail("DDL long query number greater than 5, so just show top 5 ddl sql")
+        msg.fail("DDL long query number greater than DDL_SHOW_LIMIT, so just show top DDL_SHOW_LIMIT ddl sql")
     sorted(ddl_long_query, key=lambda keys: keys['TIME'], reverse=True)
-    ddl_long_query = ddl_long_query[:5]
+    ddl_long_query = ddl_long_query[:DDL_SHOW_LIMIT]
     if len(ddl_long_query) !=0:
         output_sql_table_format(ddl_long_query)
 
 
 def show_big_transaction(bigtrx_list):
-    if len(bigtrx_list) > 5:
-        msg.fail("big transaction number greater than 5, so just show top 5 dml sql")
+    if len(bigtrx_list) > SELECT_SHOW_LIMIT:
+        msg.fail("big transaction number greater than SELECT_SHOW_LIMIT, so just show top SELECT_SHOW_LIMIT bigtrx")
         sorted(bigtrx_list, key=lambda keys: keys['trx_started'], reverse=True)
-        bigtrx_list = bigtrx_list[:5]
+        bigtrx_list = bigtrx_list[:SELECT_SHOW_LIMIT]
     data = []
     for trx in bigtrx_list:
         data.append((trx["trx_id"], trx["trx_state"], trx["trx_started"],
@@ -372,6 +412,22 @@ def show_big_transaction(bigtrx_list):
     formatted = table(data, header=header, divider=True)
     print(formatted)
 
+def find_blocking_thread_by_table_name(table_name,select_long_query,dml_long_query,ddl_long_query,bigtrx):
+    blocking_thread = []
+    for row in select_long_query:
+        if table_name in row["INFO"]:
+            blocking_thread.append(row)
+    for row in dml_long_query:
+        if table_name in row["INFO"]:
+            blocking_thread.append(row)
+    for row in ddl_long_query:
+        if table_name  in row["INFO"]:
+            blocking_thread.append(row)
+    for row in bigtrx:
+        if table_name in row["trx_query"]:
+            blocking_thread.append(row)
+    return blocking_thread
+
 
 def analyse_processlist(db, outfile, time=10):
     try:
@@ -383,15 +439,32 @@ def analyse_processlist(db, outfile, time=10):
         cursor.close()
         traceback.print_exc()
 
-    if len(results) == 0:
-        print("mysql looks good")
 
-    bigtrx = get_bigtransactions(cursor)
+    bigtrx,bigtrx_ids = get_bigtransactions(cursor)
+
+    if len(results) == 0 and len(bigtrx) ==0:
+        click.echo("mysql looks good!")
+        return
+    if len(results) == 0 and len(bigtrx) >0:
+        click.echo("There are no long query,but there are long uncommitted transaction")
+        show_big_transaction(bigtrx)
+        confirm = confirm_kill("bigtrx")
+        if confirm == True:
+            kill_thread(cursor,bigtrx_ids)
+            click.echo("done")
+        else:
+            click.echo("kill nothing")
+        return
 
     dml_long_query = []
     select_long_query = []
     ddl_long_query = []
     login_list = []
+
+    dml_long_query_ids = []
+    select_long_query_ids = []
+    ddl_long_query_ids = []
+
     dml_count = 0
     open_table_count = 0
 
@@ -402,20 +475,25 @@ def analyse_processlist(db, outfile, time=10):
             "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables","User sleep",
                          "executing", "updating main table", "updating reference tables","Searching rows for update"]:
             dml_long_query.append(row)
+            dml_long_query_ids.append(row["ID"])
         elif prefix.startswith("select") and row["STATE"] in ["Sending data", "Copying to tmp table","User sleep",
                                                               "Copying to tmp table on disk", "Creating sort index",
                                                               "executing", "Sorting for group", "Sorting for order",
                                                               "Sorting result","removing tmp table","Sending to client"]:
             select_long_query.append(row)
+            select_long_query_ids.append(row["ID"])
         elif (prefix.startswith("alter") or prefix.startswith("drop") or prefix.startswith("truncate")) and row[
             "STATE"] in ["altering table", "copy to tmp table", "Creating index",
                          "committing alter table to storage engine", "discard_or_import_tablespace",
                          "preparing for alter table","rename"]:
             ddl_long_query.append(row)
+            ddl_long_query_ids.append(row["ID"])
         else:
             if row["STATE"] == "login":
                 login_list.append(row)
 
+    is_long_query_problem = False
+    is_long_transaction_problem =  False
     for row in results:
         if row["STATE"] == "Rolling back":
             msg.fail("transaction is rolling back")
@@ -427,12 +505,8 @@ def analyse_processlist(db, outfile, time=10):
             msg.fail("check skip-name-resolve setting or check your network")
         if row["STATE"] == "System lock":
             msg.fail("check io performance,maybe long query is running ,check table primary key setting")
-            ids = show_long_query(select_long_query, dml_long_query, ddl_long_query)
-            kill = confirm_kill_query()
-            if kill == True:
-                kill_long_query_big_trx(cursor, ids)
-            else:
-                click.echo("do noting")
+            is_long_transaction_problem = True
+            is_long_query_problem = True
         if row["STATE"] == "statistics":
             msg.fail("keep statistics up to date")
         if row["STATE"] == "Creating sort index":
@@ -461,8 +535,8 @@ def analyse_processlist(db, outfile, time=10):
         if row["STATE"] == "Waiting for global read lock":
             if row["INFO"] == "flush tables with read lock":
                 msg.fail("flush tables with read lock is waiting read lock,you can kill long query and big trx")
-                show_long_query(select_long_query, dml_long_query, ddl_long_query)
-                show_big_transaction(bigtrx)
+                is_long_transaction_problem = True
+                is_long_query_problem = True
             else:
                 open_tables_res = show_open_tables_without_performance_schema(cursor)
                 if len(open_tables_res) == 0:
@@ -481,8 +555,9 @@ def analyse_processlist(db, outfile, time=10):
                             "performance_schema does not open can't find which thread caused ,try to kill long sleep thread ")
                 else:
                     msg.fail("sql blocked by other long query sql, blocked sql is :" + row["INFO"])
-                    show_long_query(select_long_query, dml_long_query, ddl_long_query)
-                    show_big_transaction(bigtrx)
+                    is_long_transaction_problem = True
+                    is_long_query_problem = True
+
         if row["STATE"] == "Waiting for tables":
             pass
         if row["STATE"] == "Waiting for table flush":
@@ -491,7 +566,7 @@ def analyse_processlist(db, outfile, time=10):
                                                                                                 row["TIME"]))
             ps,mdl_enabled = check_ps_mdl_lock_status(cursor)
             if ps == "ON" and mdl_enabled=="YES":
-                msg.fail("kill it thread")
+                msg.fail("kill thread")
                 find_waiting_root_thread(cursor)
 
             elif mdl_enabled!="YES":
@@ -500,17 +575,22 @@ def analyse_processlist(db, outfile, time=10):
             elif ps != "ON":
                 msg.fail(
                     "performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
-            show_long_query(select_long_query,dml_long_query,ddl_long_query)
-            show_big_transaction(bigtrx)
 
         if row["STATE"] == "Waiting for table metadata lock":
             msg.fail("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
                                                                                                row["TIME"]))
-            # show long query and check big transaction
-            # query processlist according table name
-            # 需要合并下，针对非常多的等待，需要找到根阻塞，可以先根据表名找慢查询，没有然后在用时间对比去找长事务
-            show_long_query(select_long_query, dml_long_query, ddl_long_query)
-            show_big_transaction(bigtrx)
+
+            table_name = extract_tables(row["INFO"])
+            real_table_name=  table_name[0][1]
+            blocking_thread = find_blocking_thread_by_table_name(real_table_name,select_long_query,dml_long_query,ddl_long_query,bigtrx)
+            if len(blocking_thread) == 0:
+                click.echo("cause by uncommited transaction,kill long transactions")
+                is_long_transaction_problem = True
+            else:
+                click.echo("blocking_thread info:")
+                output_sql_table_format(blocking_thread)
+                is_long_transaction_problem=True
+
         if row["STATE"] == "updating":
             pid = row["ID"]
             get_block_info = block_thread_info(cursor, pid)
@@ -533,9 +613,11 @@ def analyse_processlist(db, outfile, time=10):
                 "blocking_age", "blocking_wait_secs", "blocking_user", "blocking_host", "blocking_db")
                 formatted = table(data, header=header, divider=True)
                 print(formatted)
+                is_long_transaction_problem = True
+
             else:
                 dml_count = dml_count + 1
-                if dml_count > 10 and len(login_list) > 5:
+                if dml_count > 10 and len(login_list > 5 and row["USER"] != "unauthenticated user"):
                     msg.fail("may be disk is full, pls check disk free space!")
                 else:
                     msg.fail("long sql is executing! id: {} user: {} host: {} sql is: {}".format(row["ID"],row["USER"],row["HOST"], row["INFO"]))
@@ -549,8 +631,36 @@ def analyse_processlist(db, outfile, time=10):
                 msg.fail(
                     "increase table_open_cache or decrease tables in sql or decrease sql parrallel execution or disk performance is not good")
 
+        if is_long_transaction_problem == True:
+            show_big_transaction(bigtrx)
+            confirm = confirm_kill("bigtrx")
+            if confirm == True:
+                kill_thread(bigtrx_ids)
+                click.echo("done")
+            else:
+                click.echo("kill nothing")
 
+        if is_long_query_problem == True:
+            show_long_query(select_long_query,dml_long_query,ddl_long_query)
+            confirm = confirm_kill("query")
+            if confirm == True:
+                kill_thread(select_long_query_ids)
+                click.echo("done")
+            else:
+                click.echo("kill nothing")
+            confirm = confirm_kill("dml")
+            if confirm == True:
+                kill_thread(dml_long_query_ids)
+                click.echo("done")
+            else:
+                click.echo("kill nothing")
 
+            confirm = confirm_kill("ddl")
+            if confirm == True:
+                kill_thread(ddl_long_query_ids)
+                click.echo("done")
+            else:
+                click.echo("kill nothing")
 
 def build_option_parser():
     parser = argparse.ArgumentParser(usage='myanalyzer.py -t 5  -i 192.168.0.0.1')
@@ -559,6 +669,13 @@ def build_option_parser():
         help="show or check.",
         default="check"
     )
+
+    parser.add_argument(
+        '-n', '--topn',
+        help="show topn long query or big transaction record.",
+        default=5
+    )
+
     parser.add_argument(
         '-t', '--time',
         help="check thread which time greater than t.",
@@ -614,18 +731,25 @@ def main():
 
     action = opts.action
     if action == "show":
-        pass
+        show_processlist(con)
     elif action == "check":
         if opts.time:
             time = opts.time
+        if opts.topn:
+            global SELECT_SHOW_LIMIT
+            global DML_SHOW_LIMIT
+            global DDL_SHOW_LIMIT
+            SELECT_SHOW_LIMIT = opts.topn
+            DML_SHOW_LIMIT = opts.topn
+            DDL_SHOW_LIMIT = opts.topn
+
         try:
             analyse_processlist(con, outfile, time)
         except Exception as ex:
             traceback.print_exc()
-    if outfile != None:
-        outfile.close()
-    if con != None:
-        con.close()
+        finally:
+            outfile.close()
+            con.close()
 
 if __name__ == '__main__':
     main()
