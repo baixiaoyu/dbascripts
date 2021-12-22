@@ -2,11 +2,15 @@
 # coding: utf-8
 import argparse
 import traceback
+import pprint
 from urllib import parse
 import os
 import sys
 
 import click as click
+from cli_helpers import tabular_output
+from pymysql.constants import FIELD_TYPE
+from pymysql.converters import decoders
 from sqlparse.sql import IdentifierList, Identifier, Function
 from sqlparse.tokens import Punctuation, Keyword, DML
 from wasabi import Printer, table
@@ -29,6 +33,12 @@ BIG_TRANSACTION_TIME = 10
 SELECT_SHOW_LIMIT = 5
 DML_SHOW_LIMIT = 5
 DDL_SHOW_LIMIT = 5
+
+FIELD_TYPES = decoders.copy()
+FIELD_TYPES.update({
+    FIELD_TYPE.NULL: type(None)
+})
+
 
 #for table output ,we can try to use cli_helper for long output
 
@@ -362,14 +372,13 @@ def block_thread_info(cursor, id):
 def output_sql_table_format(rows):
     data = []
     for row in rows:
+        sql = pprint.pformat(row["INFO"])
         data.append((row["ID"], row["USER"], row["HOST"], row["DB"], row["COMMAND"], row["TIME"], row["STATE"],
-                     row["INFO"],row["ROWS_SENT"], row["ROWS_EXAMINED"]))
-    header = (
+                     sql, row["ROWS_SENT"], row["ROWS_EXAMINED"]))
+    headers = (
         "ID", "USER", "HOST", "DB", "COMMAND", "TIME",
         "STATE", "INFO", "ROWS_SENT", "ROWS_EXAMINED")
-    formatted = table(data, header=header, divider=True)
-    print(formatted)
-
+    print("\n".join(tabular_output.format_output(data, headers, format_name='simple')))
 
 def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
     if len(select_long_query) > SELECT_SHOW_LIMIT:
