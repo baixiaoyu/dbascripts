@@ -13,7 +13,6 @@ from pymysql.constants import FIELD_TYPE
 from pymysql.converters import decoders
 from sqlparse.sql import IdentifierList, Identifier, Function
 from sqlparse.tokens import Punctuation, Keyword, DML
-from wasabi import Printer, table
 import configparser
 import sqlparse
 
@@ -28,7 +27,7 @@ except ImportError:
 from warnings import filterwarnings
 filterwarnings('ignore',category=pymysql.Warning)
 
-msg = Printer(line_max=2000)
+
 BIG_TRANSACTION_TIME = 10
 SELECT_SHOW_LIMIT = 5
 DML_SHOW_LIMIT = 5
@@ -246,7 +245,6 @@ def kill_thread(cursor,ids):
     try:
         for id in ids:
             sql = "kill " + str(id)
-            print(sql)
             cursor.execute(sql)
     except Exception as e:
         traceback.print_exc()
@@ -274,11 +272,10 @@ def show_mdl_lock_info(rows):
     for row in rows:
         data.append((row["ID"], row["USER"], row["HOST"], row["DB"], row["COMMAND"], row["TIME"], row["OWNER_THREAD_ID"],
                      row["OBJECT_TYPE"],row["OBJECT_SCHEMA"], row["OBJECT_NAME"],row["LOCK_TYPE"],row["LOCK_DURATION"],row["LOCK_STATUS"]))
-    header = (
+    headers = (
         "ID", "USER", "HOST", "DB", "COMMAND", "TIME",
         "OWNER_THREAD_ID", "OBJECT_TYPE", "OBJECT_SCHEMA", "OBJECT_NAME","LOCK_TYPE","LOCK_DURATION","LOCK_STATUS")
-    formatted = table(data, header=header, divider=True)
-    print(formatted)
+    print("\n".join(tabular_output.format_output(data, headers, format_name='simple')))
 
 def find_waiting_root_thread(cursor):
     sql = "SELECT B.ID,B.USER,B.HOST,B.DB,b.COMMAND,b.TIME,C.OWNER_THREAD_ID,C.OBJECT_TYPE,c.OBJECT_SCHEMA," \
@@ -382,21 +379,22 @@ def output_sql_table_format(rows):
 
 def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
     if len(select_long_query) > SELECT_SHOW_LIMIT:
-        msg.fail("Select long query number greater than SELECT_SHOW_LIMIT, so just show top SELECT_SHOW_LIMIT select sql")
+        click.secho("Select long query number greater than SELECT_SHOW_LIMIT, "
+                    "so just show top SELECT_SHOW_LIMIT select sql", fg="red")
     sorted(select_long_query, key=lambda keys: keys['TIME'], reverse=True)
     select_long_query = select_long_query[:SELECT_SHOW_LIMIT]
     if len(select_long_query) !=0:
         output_sql_table_format(select_long_query)
 
     if len(dml_long_query) > DML_SHOW_LIMIT:
-        msg.fail("DML long query number greater than DML_SHOW_LIMIT, so just show top DML_SHOW_LIMIT dml sql")
+        click.secho("DML long query number greater than DML_SHOW_LIMIT, "
+                    "so just show top DML_SHOW_LIMIT dml sql", fg="red")
     sorted(dml_long_query, key=lambda keys: keys['TIME'], reverse=True)
     dml_long_query = dml_long_query[:DML_SHOW_LIMIT]
     if len(dml_long_query) != 0:
         output_sql_table_format(dml_long_query)
-
     if len(ddl_long_query) > DDL_SHOW_LIMIT:
-        msg.fail("DDL long query number greater than DDL_SHOW_LIMIT, so just show top DDL_SHOW_LIMIT ddl sql")
+        click.secho("DDL long query number greater than DDL_SHOW_LIMIT, so just show top DDL_SHOW_LIMIT ddl sql", fg="red")
     sorted(ddl_long_query, key=lambda keys: keys['TIME'], reverse=True)
     ddl_long_query = ddl_long_query[:DDL_SHOW_LIMIT]
     if len(ddl_long_query) !=0:
@@ -405,21 +403,22 @@ def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
 
 def show_big_transaction(bigtrx_list):
     if len(bigtrx_list) > SELECT_SHOW_LIMIT:
-        msg.fail("big transaction number greater than SELECT_SHOW_LIMIT, so just show top SELECT_SHOW_LIMIT bigtrx")
+        click.secho("big transaction number greater than SELECT_SHOW_LIMIT, so just show top SELECT_SHOW_LIMIT bigtrx", fg="red")
+
         sorted(bigtrx_list, key=lambda keys: keys['trx_started'], reverse=True)
         bigtrx_list = bigtrx_list[:SELECT_SHOW_LIMIT]
     data = []
     for trx in bigtrx_list:
+        trx_query = pprint.pformat(trx["trx_query"])
         data.append((trx["trx_id"], trx["trx_state"], trx["trx_started"],
-                     trx["trx_requested_lock_id"], trx["trx_mysql_thread_id"], trx["trx_query"],
+                     trx["trx_requested_lock_id"], trx["trx_mysql_thread_id"], trx_query,
                      trx["trx_tables_in_use"], trx["trx_tables_locked"], trx["trx_isolation_level"],
                      trx["user"], trx["host"], trx["db"], trx["info"]))
 
-    header = (
+    headers = (
         "trx_id", "trx_state", "trx_started", "trx_requested_lock_id", "trx_mysql_thread_id", "trx_query",
         "trx_tables_in_use", "trx_tables_locked", "trx_isolation_level", "user", "host", "db", "info")
-    formatted = table(data, header=header, divider=True)
-    print(formatted)
+    print("\n".join(tabular_output.format_output(data, headers, format_name='simple')))
 
 def find_blocking_thread_by_table_name(table_name,select_long_query,dml_long_query,ddl_long_query,bigtrx):
     blocking_thread = []
@@ -447,6 +446,7 @@ def analyse_processlist(db, outfile, time=10):
     except Exception as e:
         cursor.close()
         traceback.print_exc()
+        return
 
 
     bigtrx,bigtrx_ids = get_bigtransactions(cursor)
@@ -459,7 +459,7 @@ def analyse_processlist(db, outfile, time=10):
         show_big_transaction(bigtrx)
         confirm = confirm_kill("bigtrx")
         if confirm == True:
-            kill_thread(cursor,bigtrx_ids)
+            kill_thread(cursor, bigtrx_ids)
             click.echo("done")
         else:
             click.echo("kill nothing")
@@ -505,98 +505,104 @@ def analyse_processlist(db, outfile, time=10):
     is_long_transaction_problem =  False
     for row in results:
         if row["STATE"] == "Rolling back":
-            msg.fail("transaction is rolling back")
+            click.secho(f"transaction is rolling back",fg="red")
         if row["USER"] == "unauthenticated user":
-            msg.fail("pls check skip-name-resolve setting or threadpool setting or check network from client ip to mysql server or check application from client ip")
+            click.secho(f"pls check skip-name-resolve setting or threadpool setting "
+                        f"or check network from client ip to mysql server or check application from client ip", fg="red")
         if row["STATE"] == "deleting from reference tables":
-            msg.fail("The server is executing the second part of a multiple-table delete and deleting the matched rows from the other tables. consider optimize sql")
+            click.secho(f"The server is executing the second part of a multiple-table delete and "
+                        f"deleting the matched rows from the other tables. consider optimize sql", fg="red")
         if row["STATE"] == "Receiving from client" or row["STATE"] == "Reading from net":
-            msg.fail("check skip-name-resolve setting or check your network")
+            click.secho(f"check skip-name-resolve setting or check your network", fg="red")
         if row["STATE"] == "System lock":
-            msg.fail("check io performance,maybe long query is running ,check table primary key setting")
+            click.secho(f"check io performance,maybe long query is running ,check table primary key setting", fg="red")
             is_long_transaction_problem = True
             is_long_query_problem = True
         if row["STATE"] == "statistics":
-            msg.fail("keep statistics up to date")
+            click.secho(f"keep statistics up to date", fg="red")
         if row["STATE"] == "Creating sort index":
-            msg.fail("consider optimize sql")
-            msg.fail("info:", row["INFO"])
+            click.secho(f"consider optimize sql", fg="red")
+            click.echo("sql info:{}".format(row["INFO"]))
         if row["STATE"] == "Waiting for commit lock":
-            msg.fail("transaction is  waiting for a commit lock.")
+            click.secho(f"transaction is  waiting for a commit lock", fg="red")
             ps, mdl_enabled = check_ps_mdl_lock_status(cursor)
             if ps == "ON" and mdl_enabled == "YES":
-                msg.fail("try to kill thread")
+                click.secho(f"below is blocking thread information ,consider to kill thread", fg="red")
                 find_waiting_root_thread(cursor)
             elif mdl_enabled == "NO":
-                msg.fail(
-                    "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
+                click.secho(f"wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,"
+                            f"try to kill long sleep thread ", fg="red")
             elif ps != "ON":
-                msg.fail(
-                    "performance_schema does not open can't find which thread caused ,try to kill long sleep thread ")
+                click.secho(f"performance_schema does not open, can't find which thread caused ,"
+                            f"try to kill long sleep thread ", fg="red")
+
         if row["STATE"] == "Sending data":
-            msg.fail("consider enlarge buffer pool or optimize sql,maybe you query too many rows")
-            msg.fail("info:",row["INFO"])
+            click.secho(f"consider enlarge buffer pool or optimize sql,maybe you query too many rows", fg="red")
+            click.echo("sql info:".format(row["INFO"]))
         if row["STATE"] == "Copying to tmp table on disk" or row["STATE"] == "Copying to tmp table":
-            msg.fail("consider enlarge max_heap_table_size and tmp_table_size,but most important is optimize sql")
-            msg.fail("sql info:", row["INFO"])
+            click.secho(f"consider enlarge max_heap_table_size and tmp_table_size,"
+                        f"but most important is optimize sql", fg="red")
+            click.echo("sql info:".format(row["INFO"]))
         if row["STATE"] == "Sending to client":
-            msg.fail("Consider to enlarge  net_buffer_length or socket send buffer /proc/sys/net/core/wmem_default ,net_buffer_length  dynamically enlarged up to max_allowed_packet bytes as needed.")
+            click.secho("server is sending data to client, sql get too many rows, sql: {}".format(row["INFO"]), fg="red")
+            click.secho("First consider to modify sql,enlarge  net_buffer_length "
+                        "or socket send buffer /proc/sys/net/core/wmem_default ,"
+                     "or increase net_buffer_length  dynamically enlarged up to "
+                        "max_allowed_packet bytes as needed.",fg="red")
         if row["STATE"] == "Waiting for global read lock":
             if row["INFO"] == "flush tables with read lock":
-                msg.fail("flush tables with read lock is waiting read lock,you can kill long query and big trx")
+                click.secho(f"flush tables with read lock is waiting read lock,you can kill long query and big trx", fg="red")
                 is_long_transaction_problem = True
                 is_long_query_problem = True
             else:
                 open_tables_res = show_open_tables_without_performance_schema(cursor)
                 if len(open_tables_res) == 0:
-                    msg.fail("sql blocked by FLUSH TABLES WITH READ LOCK,try to kill thread which executed flush tables with read lock. sql is {}".format(row["INFO"]))
+                    click.secho("sql blocked by FLUSH TABLES WITH READ LOCK,try to kill "
+                                "thread which executed flush tables with read lock. sql is {}".format(row["INFO"]))
+
                     ps, mdl_enabled = check_ps_mdl_lock_status(cursor)
                     if ps == "ON" and mdl_enabled == "YES":
-                        msg.fail("try to kill thred")
+                        click.secho("below is blocking thread information")
                         find_waiting_root_thread(cursor)
 
                     elif mdl_enabled == "NO":
-                        msg.fail(
-                            "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused ,try to kill long sleep thread  ")
+                        click.secho(f"wait/lock/metadata/sql/mdl does not enable,"
+                                    f" can't find which thread caused ,try to kill long sleep thread", fg="red")
 
                     elif ps != "ON":
-                        msg.fail(
-                            "performance_schema does not open can't find which thread caused ,try to kill long sleep thread ")
+                        click.secho(f"performance_schema does not open can't "
+                                    f"find which thread caused ,try to kill long sleep thread", fg="red")
                 else:
-                    msg.fail("sql blocked by other long query sql, blocked sql is :" + row["INFO"])
+                    click.secho("sql blocked by other long query sql, blocked sql is :" + row["INFO"], fg="red")
                     is_long_transaction_problem = True
                     is_long_query_problem = True
 
         if row["STATE"] == "Waiting for tables":
             pass
         if row["STATE"] == "Waiting for table flush":
-            msg.fail(
-                "id :{}  {} is blocked by lock table statement or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],
-                                                                                                row["TIME"]))
+            click.secho("id :{}  {} is blocked by lock table statement "
+                        "or long queries.Waiting {} seconds ".format(row["ID"], row["INFO"],row["TIME"]),fg="red")
             ps,mdl_enabled = check_ps_mdl_lock_status(cursor)
             if ps == "ON" and mdl_enabled=="YES":
-                msg.fail("kill thread")
+                click.secho("below is blocking thread information", fg="red")
                 find_waiting_root_thread(cursor)
-
             elif mdl_enabled!="YES":
-                msg.fail(
-                    "wait/lock/metadata/sql/mdl does not enable, can't find which thread caused")
+                click.secho("wait/lock/metadata/sql/mdl does not enable, can't find which thread caused", fg="red")
             elif ps != "ON":
-                msg.fail(
-                    "performance_shcema does not open,so can't find which thread hold lock,try to kill long sleep thread")
+                click.secho("performance_shcema does not open,so can't find "
+                            "which thread hold lock,try to kill long sleep thread", fg="red")
 
         if row["STATE"] == "Waiting for table metadata lock":
-            msg.fail("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
-                                                                                               row["TIME"]))
-
+            click.secho("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
+                                                                                               row["TIME"]), fg="red")
             table_name = extract_tables(row["INFO"])
             real_table_name=  table_name[0][1]
             blocking_thread = find_blocking_thread_by_table_name(real_table_name,select_long_query,dml_long_query,ddl_long_query,bigtrx)
             if len(blocking_thread) == 0:
-                click.echo("cause by uncommited transaction,kill long transactions")
+                click.secho("cause by uncommited transaction,kill long transactions", fg="red")
                 is_long_transaction_problem = True
             else:
-                click.echo("blocking_thread info:")
+                click.secho("blocking_thread info:", fg="red")
                 output_sql_table_format(blocking_thread)
                 is_long_transaction_problem=True
 
@@ -604,41 +610,44 @@ def analyse_processlist(db, outfile, time=10):
             pid = row["ID"]
             get_block_info = block_thread_info(cursor, pid)
             if len(get_block_info) > 0:
-                msg.fail("DML is blocked, waiting  info is :")
+                click.secho("DML is blocked, waiting  info is ::", fg="red")
                 data = []
                 for blockinfo in get_block_info:
+                    waiting_query = pprint.pformat(blockinfo["waiting_query"])
+                    blocking_query = pprint.pformat(blockinfo["blocking_query"])
                     data.append(
-                        (blockinfo["waiting_thread"], blockinfo["waiting_query"], blockinfo["waiting_rows_modified"],
+                        (blockinfo["waiting_thread"], waiting_query, blockinfo["waiting_rows_modified"],
                          blockinfo["waiting_age"], blockinfo["waiting_wait_secs"], blockinfo["waiting_user"],
                          blockinfo["waiting_host"], blockinfo["waiting_db"], blockinfo["blocking_thread"],
-                         blockinfo["blocking_query"], blockinfo["blocking_rows_modified"], blockinfo["blocking_age"],
+                         blocking_query, blockinfo["blocking_rows_modified"], blockinfo["blocking_age"],
                          blockinfo["blocking_wait_secs"], blockinfo["blocking_user"], blockinfo["blocking_host"],
                          blockinfo["blocking_db"]))
 
-                header = (
+                headers = (
                 "waiting_thread", "waiting_query", "waiting_rows_modified", "waiting_age", "waiting_wait_secs",
                 "waiting_user",
                 "waiting_host", "waiting_db", "blocking_thread", "blocking_query", "blocking_rows_modified",
                 "blocking_age", "blocking_wait_secs", "blocking_user", "blocking_host", "blocking_db")
-                formatted = table(data, header=header, divider=True)
-                print(formatted)
+                print("\n".join(tabular_output.format_output(data, headers, format_name='simple')))
                 is_long_transaction_problem = True
 
             else:
                 dml_count = dml_count + 1
                 if dml_count > 10 and len(login_list > 5 and row["USER"] != "unauthenticated user"):
-                    msg.fail("may be disk is full, pls check disk free space!")
+                    click.secho("may be disk is full, pls check disk free space!", fg="red")
                 else:
-                    msg.fail("long sql is executing! id: {} user: {} host: {} sql is: {}".format(row["ID"],row["USER"],row["HOST"], row["INFO"]))
+                    click.secho("long sql is executing! id: {} user: {} host: {} "
+                                "sql is: {}".format(row["ID"],row["USER"],row["HOST"], row["INFO"]), fg="red")
+
 
         if row["STATE"] == "Opening tables":
             if len(ddl_long_query) > 0:
-                msg.fail("maybe is droping or truncating big tables ,pls check big ddl ")
+                click.secho("maybe is droping or truncating big tables ,pls check big ddl ")
                 show_long_query(ddl_long_query=ddl_long_query)
             open_table_count = open_table_count + 1
             if open_table_count > 10:
-                msg.fail(
-                    "increase table_open_cache or decrease tables in sql or decrease sql parrallel execution or disk performance is not good")
+                click.secho("increase table_open_cache or decrease tables in sql or decrease "
+                            "sql parrallel execution or disk performance is not good", fg="red")
 
         if is_long_transaction_problem == True:
             show_big_transaction(bigtrx)
@@ -650,7 +659,7 @@ def analyse_processlist(db, outfile, time=10):
                 click.echo("kill nothing")
 
         if is_long_query_problem == True:
-            show_long_query(select_long_query,dml_long_query,ddl_long_query)
+            show_long_query(select_long_query, dml_long_query,ddl_long_query)
             confirm = confirm_kill("query")
             if confirm == True:
                 kill_thread(select_long_query_ids)
