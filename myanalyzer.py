@@ -244,8 +244,16 @@ def check_is_slave(cursor):
 def kill_thread(cursor,ids):
     try:
         for id in ids:
-            sql = "kill " + str(id)
+            sql = "select * from information_schema.processlist where id={}".format(id)
             cursor.execute(sql)
+            res = cursor.fetchall()
+            if len(res) == 0:
+                click.echo("thread already been killed.")
+            elif res[0]["INFO"] == None or res[0]["INFO"] == "":
+                click.echo("query has ended.")
+            else:
+                sql = "kill " + str(id)
+                cursor.execute(sql)
     except Exception as e:
         traceback.print_exc()
         cursor.close()
@@ -455,7 +463,7 @@ def analyse_processlist(db, outfile, time=10):
         click.echo("mysql looks good!")
         return
     if len(results) == 0 and len(bigtrx) >0:
-        click.echo("There are no long query,but there are long uncommitted transaction")
+        click.echo("There are no long queries,but there are long time uncommitted transactions")
         show_big_transaction(bigtrx)
         confirm = confirm_kill("bigtrx")
         if confirm == True:
@@ -478,7 +486,8 @@ def analyse_processlist(db, outfile, time=10):
     open_table_count = 0
 
     for row in results:
-
+        if row["INFO"] == None or row["INFO"] == "":
+            continue
         prefix = row["INFO"][:20].lower()
         if prefix.startswith("update") or prefix.startswith("delete") or prefix.startswith("insert") and row[
             "STATE"] in ["update", "updating", "deleting from main table", "deleting from reference tables","User sleep",
@@ -507,21 +516,25 @@ def analyse_processlist(db, outfile, time=10):
         if row["STATE"] == "Rolling back":
             click.secho(f"transaction is rolling back",fg="red")
         if row["USER"] == "unauthenticated user":
-            click.secho(f"pls check skip-name-resolve setting or threadpool setting "
+            click.secho(f"user is unauthenticated user,"
+                        f"pls check skip-name-resolve setting or threadpool setting "
                         f"or check network from client ip to mysql server or check application from client ip", fg="red")
         if row["STATE"] == "deleting from reference tables":
             click.secho(f"The server is executing the second part of a multiple-table delete and "
                         f"deleting the matched rows from the other tables. consider optimize sql", fg="red")
         if row["STATE"] == "Receiving from client" or row["STATE"] == "Reading from net":
-            click.secho(f"check skip-name-resolve setting or check your network", fg="red")
+            click.secho(f"eceiving from client or Reading from net,pls"
+                        f" check skip-name-resolve setting or check your network", fg="red")
         if row["STATE"] == "System lock":
-            click.secho(f"check io performance,maybe long query is running ,check table primary key setting", fg="red")
+            click.secho(f"System lock: check io performance,maybe long query is running ,check table primary key setting", fg="red")
             is_long_transaction_problem = True
             is_long_query_problem = True
+        if row["STATE"] == "altering table":
+            click.secho("altering table: altering big table,sql: {}".format(row["INFO"]), fg="red")
         if row["STATE"] == "statistics":
-            click.secho(f"keep statistics up to date", fg="red")
+            click.secho(f"statistics: pls keep statistics up to date", fg="red")
         if row["STATE"] == "Creating sort index":
-            click.secho(f"consider optimize sql", fg="red")
+            click.secho(f"Creating sort index, consider optimize sql", fg="red")
             click.echo("sql info:{}".format(row["INFO"]))
         if row["STATE"] == "Waiting for commit lock":
             click.secho(f"transaction is  waiting for a commit lock", fg="red")
@@ -537,12 +550,12 @@ def analyse_processlist(db, outfile, time=10):
                             f"try to kill long sleep thread ", fg="red")
 
         if row["STATE"] == "Sending data":
-            click.secho(f"consider enlarge buffer pool or optimize sql,maybe you query too many rows", fg="red")
-            click.echo("sql info:".format(row["INFO"]))
+            click.secho(f"Sending data: consider enlarge buffer pool or optimize sql,maybe you query too many rows", fg="red")
+            click.echo("sql info:{}".format(row["INFO"]))
         if row["STATE"] == "Copying to tmp table on disk" or row["STATE"] == "Copying to tmp table":
             click.secho(f"consider enlarge max_heap_table_size and tmp_table_size,"
                         f"but most important is optimize sql", fg="red")
-            click.echo("sql info:".format(row["INFO"]))
+            click.echo("sql info:{}".format(row["INFO"]))
         if row["STATE"] == "Sending to client":
             click.secho("server is sending data to client, sql get too many rows, sql: {}".format(row["INFO"]), fg="red")
             click.secho("First consider to modify sql,enlarge  net_buffer_length "
@@ -596,10 +609,14 @@ def analyse_processlist(db, outfile, time=10):
             click.secho("id :{} {} is waiting for table metadata lock. waiting {} seconds".format(row["ID"], row["INFO"],
                                                                                                row["TIME"]), fg="red")
             table_name = extract_tables(row["INFO"])
+            if len(table_name) == 0:
+                click.secho("your sql use keyword as tablename", fg="red")
+                return
             real_table_name=  table_name[0][1]
             blocking_thread = find_blocking_thread_by_table_name(real_table_name,select_long_query,dml_long_query,ddl_long_query,bigtrx)
             if len(blocking_thread) == 0:
-                click.secho("cause by uncommited transaction,kill long transactions", fg="red")
+                click.secho("cause by uncommited transaction or long query,kill long transactions or long query", fg="red")
+                is_long_query_problem = True
                 is_long_transaction_problem = True
             else:
                 click.secho("blocking_thread info:", fg="red")
@@ -633,7 +650,7 @@ def analyse_processlist(db, outfile, time=10):
 
             else:
                 dml_count = dml_count + 1
-                if dml_count > 10 and len(login_list > 5 and row["USER"] != "unauthenticated user"):
+                if dml_count > 10 and len(login_list > 5 and row["USER"] == "unauthenticated user"):
                     click.secho("may be disk is full, pls check disk free space!", fg="red")
                 else:
                     click.secho("long sql is executing! id: {} user: {} host: {} "
@@ -642,43 +659,48 @@ def analyse_processlist(db, outfile, time=10):
 
         if row["STATE"] == "Opening tables":
             if len(ddl_long_query) > 0:
-                click.secho("maybe is droping or truncating big tables ,pls check big ddl ")
+                click.secho("Opening tables: maybe is droping or truncating big tables ,pls check big ddl ")
                 show_long_query(ddl_long_query=ddl_long_query)
             open_table_count = open_table_count + 1
             if open_table_count > 10:
-                click.secho("increase table_open_cache or decrease tables in sql or decrease "
+                click.secho("Opening tables: increase table_open_cache or decrease tables in sql or decrease "
                             "sql parrallel execution or disk performance is not good", fg="red")
 
         if is_long_transaction_problem == True:
-            show_big_transaction(bigtrx)
-            confirm = confirm_kill("bigtrx")
-            if confirm == True:
-                kill_thread(bigtrx_ids)
-                click.echo("done")
-            else:
-                click.echo("kill nothing")
+
+            if len(bigtrx) >0:
+                show_big_transaction(bigtrx)
+                confirm = confirm_kill("bigtrx")
+                if confirm == True:
+                    kill_thread(cursor,bigtrx_ids)
+                    click.echo("done")
+                else:
+                    click.echo("kill nothing")
 
         if is_long_query_problem == True:
-            show_long_query(select_long_query, dml_long_query,ddl_long_query)
-            confirm = confirm_kill("query")
-            if confirm == True:
-                kill_thread(select_long_query_ids)
-                click.echo("done")
-            else:
-                click.echo("kill nothing")
-            confirm = confirm_kill("dml")
-            if confirm == True:
-                kill_thread(dml_long_query_ids)
-                click.echo("done")
-            else:
-                click.echo("kill nothing")
-
-            confirm = confirm_kill("ddl")
-            if confirm == True:
-                kill_thread(ddl_long_query_ids)
-                click.echo("done")
-            else:
-                click.echo("kill nothing")
+            if len(select_long_query) >0 or len(dml_long_query) >0 or len(ddl_long_query) >0:
+                show_long_query(select_long_query, dml_long_query,ddl_long_query)
+            if len(select_long_query) >0:
+                confirm = confirm_kill("query")
+                if confirm == True:
+                    kill_thread(cursor,select_long_query_ids)
+                    click.echo("done")
+                else:
+                    click.echo("kill nothing")
+            if len(dml_long_query) > 0:
+                confirm = confirm_kill("dml")
+                if confirm == True:
+                    kill_thread(cursor,dml_long_query_ids)
+                    click.echo("done")
+                else:
+                    click.echo("kill nothing")
+            if len(ddl_long_query) >0:
+                confirm = confirm_kill("ddl")
+                if confirm == True:
+                    kill_thread(cursor,ddl_long_query_ids)
+                    click.echo("done")
+                else:
+                    click.echo("kill nothing")
 
 def build_option_parser():
     parser = argparse.ArgumentParser(usage='myanalyzer.py -t 5  -i 192.168.0.0.1')
