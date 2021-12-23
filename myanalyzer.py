@@ -29,9 +29,9 @@ filterwarnings('ignore',category=pymysql.Warning)
 
 
 BIG_TRANSACTION_TIME = 10
-SELECT_SHOW_LIMIT = 5
-DML_SHOW_LIMIT = 5
-DDL_SHOW_LIMIT = 5
+SELECT_SHOW_LIMIT = 100
+DML_SHOW_LIMIT = 100
+DDL_SHOW_LIMIT = 100
 
 FIELD_TYPES = decoders.copy()
 FIELD_TYPES.update({
@@ -91,19 +91,19 @@ BOOLEAN_TYPE = ConfirmBoolParamType()
 
 def confirm_kill(type):
     if type == "query":
-        prompt_text = ("You're about to kill long query select.\n"
+        prompt_text = ("You're about to kill all long query select.\n"
                        "Do you want to proceed? (y/n)")
     elif type == "dml":
-        prompt_text = ("You're about to kill long query dml.\n"
+        prompt_text = ("You're about to kill all long query dml.\n"
                        "Do you want to proceed? (y/n)")
     elif type == "ddl":
-        prompt_text = ("You're about to kill long  ddl.\n"
+        prompt_text = ("You're about to kill all long  ddl.\n"
                        "Do you want to proceed? (y/n)")
     elif type == "mdl":
         prompt_text = ("You're about to kill mdl lock thread.\n"
                        "Do you want to proceed? (y/n)")
     elif type == "bigtrx":
-        prompt_text = ("You're about to kill long transaction.\n"
+        prompt_text = ("You're about to kill all long transaction.\n"
                        "Do you want to proceed? (y/n)")
     res = prompt(prompt_text, type=BOOLEAN_TYPE)
 
@@ -374,9 +374,12 @@ def block_thread_info(cursor, id):
     return rows
 
 
-def output_sql_table_format(rows):
+def output_sql_table_format(rows, killed_thread):
     data = []
+    show_killed_id = []
     for row in rows:
+        if row["ID"] in killed_thread:
+            continue
         sql = pprint.pformat(row["INFO"])
         data.append((row["ID"], row["USER"], row["HOST"], row["DB"], row["COMMAND"], row["TIME"], row["STATE"],
                      sql, row["ROWS_SENT"], row["ROWS_EXAMINED"]))
@@ -385,14 +388,14 @@ def output_sql_table_format(rows):
         "STATE", "INFO", "ROWS_SENT", "ROWS_EXAMINED")
     print("\n".join(tabular_output.format_output(data, headers, format_name='simple')))
 
-def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
+def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[],killed_thread=[]):
     if len(select_long_query) > SELECT_SHOW_LIMIT:
         click.secho("Select long query number greater than SELECT_SHOW_LIMIT, "
                     "so just show top SELECT_SHOW_LIMIT select sql", fg="red")
     sorted(select_long_query, key=lambda keys: keys['TIME'], reverse=True)
     select_long_query = select_long_query[:SELECT_SHOW_LIMIT]
     if len(select_long_query) !=0:
-        output_sql_table_format(select_long_query)
+        output_sql_table_format(select_long_query,killed_thread)
 
     if len(dml_long_query) > DML_SHOW_LIMIT:
         click.secho("DML long query number greater than DML_SHOW_LIMIT, "
@@ -400,13 +403,13 @@ def show_long_query(select_long_query=[], dml_long_query=[], ddl_long_query=[]):
     sorted(dml_long_query, key=lambda keys: keys['TIME'], reverse=True)
     dml_long_query = dml_long_query[:DML_SHOW_LIMIT]
     if len(dml_long_query) != 0:
-        output_sql_table_format(dml_long_query)
+        output_sql_table_format(dml_long_query, killed_thread)
     if len(ddl_long_query) > DDL_SHOW_LIMIT:
         click.secho("DDL long query number greater than DDL_SHOW_LIMIT, so just show top DDL_SHOW_LIMIT ddl sql", fg="red")
     sorted(ddl_long_query, key=lambda keys: keys['TIME'], reverse=True)
     ddl_long_query = ddl_long_query[:DDL_SHOW_LIMIT]
     if len(ddl_long_query) !=0:
-        output_sql_table_format(ddl_long_query)
+        output_sql_table_format(ddl_long_query, killed_thread)
 
 
 def show_big_transaction(bigtrx_list):
@@ -627,7 +630,7 @@ def analyse_processlist(db, outfile, time=10):
             pid = row["ID"]
             get_block_info = block_thread_info(cursor, pid)
             if len(get_block_info) > 0:
-                click.secho("DML is blocked, waiting  info is ::", fg="red")
+                click.secho("DML is blocked, below is waiting  information. ", fg="red")
                 data = []
                 for blockinfo in get_block_info:
                     waiting_query = pprint.pformat(blockinfo["waiting_query"])
@@ -653,7 +656,7 @@ def analyse_processlist(db, outfile, time=10):
                 if dml_count > 10 and len(login_list > 5 and row["USER"] == "unauthenticated user"):
                     click.secho("may be disk is full, pls check disk free space!", fg="red")
                 else:
-                    click.secho("long sql is executing! id: {} user: {} host: {} "
+                    click.secho("long sql is executing，this sql may block other transaction! id: {} user: {} host: {} "
                                 "sql is: {}".format(row["ID"],row["USER"],row["HOST"], row["INFO"]), fg="red")
 
 
@@ -666,6 +669,7 @@ def analyse_processlist(db, outfile, time=10):
                 click.secho("Opening tables: increase table_open_cache or decrease tables in sql or decrease "
                             "sql parrallel execution or disk performance is not good", fg="red")
 
+        killed_thread = []
         if is_long_transaction_problem == True:
 
             if len(bigtrx) >0:
@@ -673,28 +677,32 @@ def analyse_processlist(db, outfile, time=10):
                 confirm = confirm_kill("bigtrx")
                 if confirm == True:
                     kill_thread(cursor,bigtrx_ids)
+                    killed_thread = bigtrx_ids
+                    select_long_query_ids = list(set(select_long_query_ids) - set(bigtrx_ids))
+                    dml_long_query_ids = list(set(dml_long_query_ids) - set(bigtrx_ids))
+                    ddl_long_query_ids = list(set(ddl_long_query_ids) - set(bigtrx_ids))
                     click.echo("done")
                 else:
                     click.echo("kill nothing")
 
         if is_long_query_problem == True:
             if len(select_long_query) >0 or len(dml_long_query) >0 or len(ddl_long_query) >0:
-                show_long_query(select_long_query, dml_long_query,ddl_long_query)
-            if len(select_long_query) >0:
+                show_long_query(select_long_query, dml_long_query,ddl_long_query,killed_thread)
+            if len(select_long_query_ids) >0:
                 confirm = confirm_kill("query")
                 if confirm == True:
                     kill_thread(cursor,select_long_query_ids)
                     click.echo("done")
                 else:
                     click.echo("kill nothing")
-            if len(dml_long_query) > 0:
+            if len(dml_long_query_ids) > 0:
                 confirm = confirm_kill("dml")
                 if confirm == True:
                     kill_thread(cursor,dml_long_query_ids)
                     click.echo("done")
                 else:
                     click.echo("kill nothing")
-            if len(ddl_long_query) >0:
+            if len(ddl_long_query_ids) >0:
                 confirm = confirm_kill("ddl")
                 if confirm == True:
                     kill_thread(cursor,ddl_long_query_ids)
