@@ -686,7 +686,7 @@ def analyse_processlist(db, outfile, time=10):
                     click.echo("kill nothing")
 
         if is_long_query_problem == True:
-            if len(select_long_query) >0 or len(dml_long_query) >0 or len(ddl_long_query) >0:
+            if len(select_long_query_ids) >0 or len(dml_long_query_ids) >0 or len(ddl_long_query_ids) >0:
                 show_long_query(select_long_query, dml_long_query,ddl_long_query,killed_thread)
             if len(select_long_query_ids) >0:
                 confirm = confirm_kill("query")
