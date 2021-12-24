@@ -484,8 +484,9 @@ def analyse_processlist(db, outfile, time=10):
     dml_long_query_ids = []
     select_long_query_ids = []
     ddl_long_query_ids = []
-
-    dml_count = 0
+    unauthenticated_user = []
+    commit_list = []
+    # dml_count = 0
     open_table_count = 0
 
     for row in results:
@@ -509,19 +510,29 @@ def analyse_processlist(db, outfile, time=10):
                          "preparing for alter table","rename"]:
             ddl_long_query.append(row)
             ddl_long_query_ids.append(row["ID"])
+        elif row["USER"] == "unauthenticated user":
+            unauthenticated_user.append(row)
+        elif row["INFO"] == "commit":
+            commit_list.append(row)
         else:
             if row["STATE"] == "login":
                 login_list.append(row)
+    # check whole state
+    if len(dml_long_query) < 5 and len(unauthenticated_user) > 5:
+        click.secho(f"user is unauthenticated user,"
+                    f"pls check skip-name-resolve setting or threadpool setting "
+                    f"or check network from client ip to mysql server or check application from client ip", fg="red")
+    if (len(dml_long_query) > 5 or len(commit_list) > 5) and len(login_list) > 5 and len(unauthenticated_user) > 5:
+        click.secho("may be disk is full, pls check disk free space!", fg="red")
+    if len(commit_list) > 2:
+        click.secho("check your disk io ,check swap memory usage", fg="red")
 
     is_long_query_problem = False
     is_long_transaction_problem =  False
+    # check every thread
     for row in results:
         if row["STATE"] == "Rolling back":
             click.secho(f"transaction is rolling back",fg="red")
-        if row["USER"] == "unauthenticated user":
-            click.secho(f"user is unauthenticated user,"
-                        f"pls check skip-name-resolve setting or threadpool setting "
-                        f"or check network from client ip to mysql server or check application from client ip", fg="red")
         if row["STATE"] == "deleting from reference tables":
             click.secho(f"The server is executing the second part of a multiple-table delete and "
                         f"deleting the matched rows from the other tables. consider optimize sql", fg="red")
@@ -551,7 +562,6 @@ def analyse_processlist(db, outfile, time=10):
             elif ps != "ON":
                 click.secho(f"performance_schema does not open, can't find which thread caused ,"
                             f"try to kill long sleep thread ", fg="red")
-
         if row["STATE"] == "Sending data":
             click.secho(f"Sending data: consider enlarge buffer pool or optimize sql,maybe you query too many rows", fg="red")
             click.echo("sql info:{}".format(row["INFO"]))
@@ -592,7 +602,6 @@ def analyse_processlist(db, outfile, time=10):
                     click.secho("sql blocked by other long query sql, blocked sql is :" + row["INFO"], fg="red")
                     is_long_transaction_problem = True
                     is_long_query_problem = True
-
         if row["STATE"] == "Waiting for tables":
             pass
         if row["STATE"] == "Waiting for table flush":
@@ -625,7 +634,6 @@ def analyse_processlist(db, outfile, time=10):
                 click.secho("blocking_thread info:", fg="red")
                 output_sql_table_format(blocking_thread)
                 is_long_transaction_problem=True
-
         if row["STATE"] == "updating":
             pid = row["ID"]
             get_block_info = block_thread_info(cursor, pid)
@@ -650,16 +658,9 @@ def analyse_processlist(db, outfile, time=10):
                 "blocking_age", "blocking_wait_secs", "blocking_user", "blocking_host", "blocking_db")
                 print("\n".join(tabular_output.format_output(data, headers, format_name='simple')))
                 is_long_transaction_problem = True
-
             else:
-                dml_count = dml_count + 1
-                if dml_count > 10 and len(login_list > 5 and row["USER"] == "unauthenticated user"):
-                    click.secho("may be disk is full, pls check disk free space!", fg="red")
-                else:
-                    click.secho("long sql is executing，this sql may block other transaction! id: {} user: {} host: {} "
+                click.secho("long sql is executing，this sql may block other transaction! id: {} user: {} host: {} "
                                 "sql is: {}".format(row["ID"],row["USER"],row["HOST"], row["INFO"]), fg="red")
-
-
         if row["STATE"] == "Opening tables":
             if len(ddl_long_query) > 0:
                 click.secho("Opening tables: maybe is droping or truncating big tables ,pls check big ddl ")
