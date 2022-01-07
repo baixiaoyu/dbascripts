@@ -235,6 +235,16 @@ def check_read_only(cursor):
     cursor.execute(sql)
     return cursor.fetchall()[0]["Value"]
 
+def check_server_version(cursor):
+    sql = "select version() version"
+    cursor.execute(sql)
+    version = cursor.fetchall()[0]["version"]
+    if version.startswith("5."):
+        return "5.x"
+    if version.startswith("8."):
+        return "8.x"
+
+
 def check_is_slave(cursor):
     sql = " show slave status"
     result = cursor.execute(sql)
@@ -339,7 +349,7 @@ def get_bigtransactions(cursor):
     return rows,ids
 
 
-def block_thread_info(cursor, id):
+def block_thread_info_5(cursor, id):
     check_block_sql = "SELECT r.trx_mysql_thread_id                     AS waiting_thread," \
                       "r.trx_query                                      AS waiting_query, " \
                       "r.trx_rows_modified                              AS waiting_rows_modified, " \
@@ -365,6 +375,35 @@ def block_thread_info(cursor, id):
                       "LEFT JOIN INFORMATION_SCHEMA.PROCESSLIST bp ON bp.id = b.trx_mysql_thread_id " \
                       "LEFT JOIN INFORMATION_SCHEMA.PROCESSLIST rp ON rp.id = r.trx_mysql_thread_id " \
                       "where  r.trx_mysql_thread_id={0}".format(int(id))
+    try:
+        cursor.execute(check_block_sql)
+        rows = cursor.fetchall()
+    except Exception as e:
+        traceback.print_exc()
+        cursor.close()
+    return rows
+
+
+def block_thread_info_8(cursor, id):
+    check_block_sql = "SELECT r.trx_mysql_thread_id AS waiting_thread,r.trx_query AS waiting_query," \
+                      " r.trx_rows_modified AS waiting_rows_modified,TIMESTAMPDIFF(SECOND, r.trx_started, NOW()) AS waiting_age," \
+                      "TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()) AS waiting_wait_secs, rp.user AS waiting_user," \
+                      "rp.host  AS waiting_host,rp.db AS waiting_db," \
+                      "b.trx_mysql_thread_id AS blocking_thread,b.trx_query AS blocking_query," \
+                      "b.trx_rows_modified AS blocking_rows_modified," \
+                      "TIMESTAMPDIFF(SECOND, b.trx_started, NOW()) AS blocking_age, " \
+                      "TIMESTAMPDIFF(SECOND, b.trx_wait_started, NOW()) AS blocking_wait_secs," \
+                      "bp.user AS blocking_user,bp.host AS blocking_host,bp.db AS blocking_db," \
+                      "CONCAT(bp.command, IF(bp.command = 'Sleep', CONCAT(' ', bp.time),   '')) AS blocking_status," \
+                      "CONCAT(lock_mode, ' ', lock_type, ' ', object_name, '(', index_name, ')') AS lock_info " \
+                      "FROM performance_schema.data_lock_waits w " \
+                      "JOIN INFORMATION_SCHEMA.INNODB_TRX b   ON  b.trx_id  = w.blocking_engine_transaction_id " \
+                      "JOIN INFORMATION_SCHEMA.INNODB_TRX r   ON  r.trx_id  = w.requesting_engine_transaction_id " \
+                      "JOIN performance_schema.data_locks l ON  l.engine_lock_id = w.requesting_engine_lock_id " \
+                      "LEFT JOIN INFORMATION_SCHEMA.PROCESSLIST bp ON bp.id = b.trx_mysql_thread_id " \
+                      "LEFT JOIN INFORMATION_SCHEMA.PROCESSLIST rp ON rp.id = r.trx_mysql_thread_id" \
+                      " where r.trx_mysql_thread_id={0}".format(int(id))
+
     try:
         cursor.execute(check_block_sql)
         rows = cursor.fetchall()
@@ -461,6 +500,7 @@ def analyse_processlist(db, outfile, time=10):
 
 
     bigtrx,bigtrx_ids = get_bigtransactions(cursor)
+    version = check_server_version(cursor)
 
     if len(results) == 0 and len(bigtrx) ==0:
         click.echo("mysql looks good!")
@@ -567,7 +607,7 @@ def analyse_processlist(db, outfile, time=10):
             click.echo("sql info:{}".format(row["INFO"]))
         if row["STATE"] == "Copying to tmp table on disk" or row["STATE"] == "Copying to tmp table":
             click.secho(f"consider enlarge max_heap_table_size and tmp_table_size,"
-                        f"but most important is optimize sql", fg="red")
+                        f"but first is optimize sql", fg="red")
             click.echo("sql info:{}".format(row["INFO"]))
         if row["STATE"] == "Sending to client":
             click.secho("server is sending data to client, sql get too many rows, sql: {}".format(row["INFO"]), fg="red")
@@ -636,7 +676,10 @@ def analyse_processlist(db, outfile, time=10):
                 is_long_transaction_problem=True
         if row["STATE"] == "updating":
             pid = row["ID"]
-            get_block_info = block_thread_info(cursor, pid)
+            if version == "5.x":
+                get_block_info = block_thread_info_5(cursor, pid)
+            elif version == "8.x":
+                get_block_info = block_thread_info_8(cursor, pid)
             if len(get_block_info) > 0:
                 click.secho("DML is blocked, below is waiting  information. ", fg="red")
                 data = []
@@ -671,9 +714,10 @@ def analyse_processlist(db, outfile, time=10):
                             "sql parrallel execution or disk performance is not good", fg="red")
 
         killed_thread = []
+        is_slave = check_is_slave(cursor)
         if is_long_transaction_problem == True:
 
-            if len(bigtrx) >0:
+            if len(bigtrx) >0 and False == is_slave:
                 show_big_transaction(bigtrx)
                 confirm = confirm_kill("bigtrx")
                 if confirm == True:
@@ -696,14 +740,14 @@ def analyse_processlist(db, outfile, time=10):
                     click.echo("done")
                 else:
                     click.echo("kill nothing")
-            if len(dml_long_query_ids) > 0:
+            if len(dml_long_query_ids) > 0 and is_slave==False :
                 confirm = confirm_kill("dml")
                 if confirm == True:
                     kill_thread(cursor,dml_long_query_ids)
                     click.echo("done")
                 else:
                     click.echo("kill nothing")
-            if len(ddl_long_query_ids) >0:
+            if len(ddl_long_query_ids) >0 and is_slave==False:
                 confirm = confirm_kill("ddl")
                 if confirm == True:
                     kill_thread(cursor,ddl_long_query_ids)
