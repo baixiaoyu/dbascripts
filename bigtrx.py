@@ -83,6 +83,7 @@ def get_trx(filename):
                 #print(l)
                 end_pos = l[7]
                 xid = l[-1]
+                #if transaction use auto commit ,then this end_time is not real time,it's same as begin time,so we need to check affected rows 
                 end_time = l[:2]
 
             if "COMMIT/*!*/;" in line:
@@ -137,7 +138,7 @@ def opt():
 
 if __name__ == '__main__':
     optoins = opt()
-
+#     TODO: collect group commit information ,see there are how many groups and how many transactions in group between  certain time
     if optoins.starttime and optoins.stoptime:
         cmd = 'mysqlbinlog -v -v --base64-output=decode-rows  --start-datetime="%s" --stop-datetime="%s"  %s > out.txt' %(optoins.starttime,optoins.stoptime,optoins.filename)
     elif optoins.startpos and optoins.stoppos:

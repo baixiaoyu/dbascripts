@@ -1,14 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/openark/golib/log"
 )
-
-var discoveryQueue *Queue
 
 type Queue struct {
 	sync.Mutex
@@ -44,7 +43,8 @@ func CreateOrReturnQueue(name string) *Queue {
 		name:         name,
 		queuedKeys:   make(map[string]time.Time),
 		consumedKeys: make(map[string]time.Time),
-		queue:        make(chan string, 100000),
+		queue:        make(chan string, 1000000),
+		done:         make(chan struct{}),
 	}
 	go q.startMonitoring()
 
@@ -53,14 +53,18 @@ func CreateOrReturnQueue(name string) *Queue {
 	return q
 }
 
+var Counter int
+
 func (q *Queue) startMonitoring() {
-	log.Debugf("Queue.startMonitoring(%s)", q.name)
+	fmt.Printf("Queue.startMonitoring(%s)", q.name)
 	ticker := time.NewTicker(time.Second) // hard-coded at every second
 
 	for {
 		select {
 		case <-ticker.C: // do the periodic expiry
-			log.Debugf("queue len is " + strconv.Itoa(q.QueueLen()))
+			fmt.Printf("queue len is " + strconv.Itoa(q.QueueLen()))
+			Counter = q.QueueLen()
+
 		case <-q.done:
 			return
 		}
@@ -79,7 +83,6 @@ func (q *Queue) QueueLen() int {
 }
 
 func (q *Queue) Push(key string) {
-	log.Debugf("queue begin push ")
 	q.Lock()
 	defer q.Unlock()
 
@@ -109,7 +112,7 @@ func (q *Queue) Consume() string {
 
 	// alarm if have been waiting for too long
 	timeOnQueue := time.Since(q.queuedKeys[key])
-	if timeOnQueue > time.Duration(2)*time.Second {
+	if timeOnQueue > time.Duration(200)*time.Second {
 		log.Warningf("key %v spent %.4fs waiting on a testQueue", key, timeOnQueue.Seconds())
 	}
 
@@ -127,47 +130,54 @@ func (q *Queue) Release(key string) {
 	delete(q.consumedKeys, key)
 }
 
-func handleDiscoveryRequests() {
-	discoveryQueue = CreateOrReturnQueue("DEFAULT")
+func SubtrDemo(a []string, b []string) []string {
 
-	// create a pool of discovery workers
-	for i := uint(0); i < 10; i++ {
-		go func() {
-			for {
-				instanceKey := discoveryQueue.Consume()
-				// Possibly this used to be the elected node, but has
-				// been demoted, while still the queue is full.
-				//if !IsLeaderOrActive() {
-				//	log.Debugf("Node apparently demoted. Skipping discovery of %+v. "+
-				//		"Remaining queue size: %+v", instanceKey, discoveryQueue.QueueLen())
-				//	discoveryQueue.Release(instanceKey)
-				//	continue
-				//}
+	var c []string
+	temp := map[string]struct{}{} // map[string]struct{}{}创建了一个key类型为String值类型为空struct的map，Equal -> make(map[string]struct{})
 
-				DiscoverInstance(instanceKey)
-				discoveryQueue.Release(instanceKey)
-			}
-		}()
+	for _, val := range b {
+		if _, ok := temp[val]; !ok {
+			temp[val] = struct{}{} // 空struct 不占内存空间
+		}
 	}
-}
 
-func DiscoverInstance(instanceKey string) {
-	println("consume key is :", instanceKey)
-	time.Sleep(time.Duration(10) * time.Second)
-}
-
-func putsomekey() {
-	for i := 0; i < 100; i++ {
-
-		discoveryQueue.Push("key" + strconv.Itoa(i))
+	for _, val := range a {
+		if _, ok := temp[val]; !ok {
+			c = append(c, val)
+		}
 	}
-}
-func main() {
-	handleDiscoveryRequests()
-	time.Sleep(time.Duration(5) * time.Second)
-	go putsomekey()
 
-	time.Sleep(time.Duration(5) * time.Second)
-	StopMonitoring()
-
+	return c
 }
+
+func Intersection(a []string, b []string) (inter []string) {
+	m := make(map[string]string)
+	nn := make([]string, 0)
+	for _, v := range a {
+		m[v] = v
+	}
+	for _, v := range b {
+		times, _ := m[v]
+		if len(times) > 0 {
+			nn = append(nn, v)
+		}
+	}
+	return nn
+}
+
+var DiscoveryQueue *Queue
+
+// func HandleDiscoveryRequests() {
+// 	DiscoveryQueue = CreateOrReturnQueue("DEFAULT")
+
+// 	// create a pool of discovery workers
+// 	for i := uint(0); i < 50; i++ {
+// 		go func() {
+// 			for {
+// 				instanceKey := DiscoveryQueue.Consume()
+// 				DealSql(instanceKey)
+// 				DiscoveryQueue.Release(instanceKey)
+// 			}
+// 		}()
+// 	}
+// }
