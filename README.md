@@ -16,6 +16,7 @@
     *  show bloking information
     
 
-
+* mystructdiff.py 
+    *   can compare table structure differences
 
 
