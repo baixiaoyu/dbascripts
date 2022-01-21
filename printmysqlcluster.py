@@ -44,7 +44,6 @@ def findnext(instance,list,level):
     for i in list:
         # print("i.master",i.master,"master ip",instance.ip)
         if i.master == instance.ip:
-
             print(level*'\t',"slave:",i.ip)
             findnext(i, list, level+1)
             this_level.append(i)
