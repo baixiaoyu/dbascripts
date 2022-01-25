@@ -8,6 +8,7 @@
     *  can input a binlog file get big transaction information like time,size,rows
     *  can get big transaction details
     *  just for explicit commit transaction,for implicate commit transactions, xid endtime is same as starttime,so we can't get real time
+we can get transaction information from stream like binlog2sql without using mysqlbinlog,it's a better way.  
 
 
 * myanalyzer.py is a processlist analyzer
