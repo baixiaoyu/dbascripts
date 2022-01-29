@@ -29,7 +29,7 @@ insert into storage(storage_type,storage_type ,storage_param ,storage_ip,storage
 
     backup policy table
 
-insert into backup_policy(backup_cron,backup_ip,backup_port,backup_took,backup_type,backup_potention,storage_id)
+insert into backup_policy(backup_cron,backup_ip,backup_port,backup_took,backup_type,backup_retention,storage_id)
 
 
 
