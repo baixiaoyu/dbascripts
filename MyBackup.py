@@ -231,6 +231,7 @@ class BackupStorage():
         self.storage_dir = ""
         self.storage_param = {}
         self.storage_ip = ""
+        self.storage_zone = ""
 
     def upload_backup(self):
         pass
