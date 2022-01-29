@@ -16,6 +16,7 @@
     * backup keeps on local server and remote storage
     * dbagent monitor policy change and setup/remove backup scripts
 
+    
     backup result table 
   
 insert into mysql_backup_info(instance_port,stage,stage_status,stage,message,instance_ip,backup_type,backup_begin_time,backup_end_time," \
