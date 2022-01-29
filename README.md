@@ -25,7 +25,7 @@ insert into mysql_backup_info(instance_port,stage,stage_status,stage,message,ins
 
     storage table
 
-insert into storage(storage_type,storage_type ,storage_param ,storage_ip,storage_zone)
+insert into storage(storage_type,storage_dir ,storage_param ,storage_ip,storage_zone)
 
     backup policy table
 
