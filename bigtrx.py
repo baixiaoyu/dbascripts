@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# -*- coding: utf-8 -*-
 import datetime
 import time
 from optparse import OptionParser
@@ -58,19 +59,24 @@ def get_trx(filename):
             if not line:
                 break
 
-            if "BEGIN" in line:
+            if "BEGIN" == line.strip():
                # v = Event(0,0,0,0)
                 first_at = True
                 first_time = True
                 rows = 0
                 start_line = line_no
 
-            if "#" in line and first_at:
+            if line.startswith("#") and first_at:
 
                 start_pos = line.split(' ')[-1]
                 first_at = False
             if "end_log_pos" in line and "Table_map" in line:
-                start_time = line.split(" ")[:2]
+                # 需要修改下获取方式，遍历数组，然后根据关键字去获取值，不能用位置获取
+                l = line.split(" ")
+                for i in range(len(l)):
+                    if l[i] == "server":
+                        pos = i
+                start_time = line.split(" ")[:pos]
             if "UPDATE" in line or "INSERT" in line or "DELETE" in line:
                 try:
                     rows = rows +1
@@ -80,18 +86,30 @@ def get_trx(filename):
                     print(line)
             if "end_log_pos" in line and "Xid" in line:
                 l = line.split(" ")
-                #print(l)
-                end_pos = l[7]
+                for i in range(len(l)):
+                    if l[i] == "end_log_pos":
+                        endpos = i+1
+                    if l[i] == "server":
+                        endtimepos = i
+                # 需要修改下获取方式，遍历数组，然后根据关键字去获取值，不能用位置获取
+                end_pos = l[endpos]
                 xid = l[-1]
-                #if transaction use auto commit ,then this end_time is not real time,it's same as begin time,so we need to check affected rows 
-                end_time = l[:2]
+                #if transaction use auto commit ,then this end_time is not real time,it's same as begin time,so we need to check affected rows
+                # 需要修改下获取方式，遍历数组，然后根据关键字去获取值，不能用位置获取/
+                end_time = l[:endtimepos]
 
             if "COMMIT/*!*/;" in line:
                 try:
                     end_line = line_no
-                    s_time = string_toTimestamp("20"+start_time[0][1:] + " " + start_time[1])
-                    e_time = string_toTimestamp("20"+end_time[0][1:] + " " + end_time[1])
-                    exec_time =  e_time - s_time
+                    if len(start_time)==3:
+                        s_time = string_toTimestamp("20"+start_time[0][1:] + " " + start_time[2])
+                    elif len(start_time)==2:
+                        s_time = string_toTimestamp("20" + start_time[0][1:] + " " + start_time[1])
+                    if len(end_time) == 3:
+                        e_time = string_toTimestamp("20"+end_time[0][1:] + " " + end_time[2])
+                    elif len(end_time) ==2:
+                        e_time = string_toTimestamp("20" + end_time[0][1:] + " " + end_time[1])
+                    exec_time = e_time - s_time
                 except Exception as e:
                     print"commit error"
                     print(line_no)
