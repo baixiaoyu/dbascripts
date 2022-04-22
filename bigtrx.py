@@ -13,7 +13,9 @@ class Event:
     trx_start = "2020-01-01 00:00:00"
     start_line = 0
     end_line = 0
-    def __init__(self, trx_id, event_rows,trx_size,trx_time,trx_start,start_line,end_line):
+    last_committed = 0
+    sequence_number = 0
+    def __init__(self, trx_id, event_rows,trx_size,trx_time,trx_start,start_line,end_line,last_committed,sequence_number):
         self.trx_id = trx_id
         self.event_rows = event_rows
         self.trx_size =trx_size
@@ -21,26 +23,30 @@ class Event:
         self.trx_start = trx_start
         self.start_line = start_line
         self.end_line = end_line
+        self.last_committed = last_committed
+        self.sequence_number =sequence_number
 
     def __str__(self):
         timeArray = time.localtime(self.trx_start)
-        return 'trx %s start at:%s from line: %s to line: %s has %s rows ,size %s,executed:%s s' % (self.trx_id, time.strftime("%Y--%m--%d %H:%M:%S",timeArray),self.start_line,self.end_line,self.event_rows,self.trx_size,self.trx_time)
+        return 'trx %s start at:%s from line: %s to line: %s has %s rows ,size: %s, executed:%s s last_committed: %s sequence_number: %s' \
+               % (self.trx_id, time.strftime("%Y--%m--%d %H:%M:%S",timeArray),self.start_line,
+                  self.end_line,self.event_rows,self.trx_size,self.trx_time,self.last_committed,self.sequence_number)
 
 def string_toTimestamp(st):
     return time.mktime(time.strptime(st, "%Y%m%d %H:%M:%S"))
 
 def get_top_10_by_rows(event_list):
     sorted_rows = sorted(event_list, key=lambda x: x.event_rows, reverse=True)
-    return sorted_rows[:10]
+    return sorted_rows[:100]
 
 
 def get_top_10_by_size(event_list):
     sorted_size = sorted(event_list, key=lambda x: x.trx_size,  reverse=True)
-    return sorted_size[:10]
+    return sorted_size[:100]
 
 def get_top_10_by_time(event_list):
     sorted_time = sorted(event_list, key=lambda x: x.trx_time,  reverse=True)
-    return sorted_time[:10]
+    return sorted_time[:100]
 
 
 def get_trx(filename):
@@ -58,10 +64,18 @@ def get_trx(filename):
             first_time = False
             if not line:
                 break
-
+            if "last_committed" in line and "sequence_number" in line:
+                l = line.split("\t")
+                for i in range(len(l)):
+                    if "last_committed" in l[i]:
+                        last_committed = l[i].split("=")[1]
+                    if "sequence_number" in l[i]:
+                        sequence_number = l[i].split("=")[1]
             if "BEGIN" == line.strip():
                # v = Event(0,0,0,0)
                 first_at = True
+                first_map =True
+
                 first_time = True
                 rows = 0
                 start_line = line_no
@@ -70,13 +84,14 @@ def get_trx(filename):
 
                 start_pos = line.split(' ')[-1]
                 first_at = False
-            if "end_log_pos" in line and "Table_map" in line:
+            if "end_log_pos" in line and "Table_map" in line and  first_map :
                 # 需要修改下获取方式，遍历数组，然后根据关键字去获取值，不能用位置获取
                 l = line.split(" ")
                 for i in range(len(l)):
                     if l[i] == "server":
                         pos = i
                 start_time = line.split(" ")[:pos]
+                first_map = False
             if "UPDATE" in line or "INSERT" in line or "DELETE" in line:
                 try:
                     rows = rows +1
@@ -120,7 +135,7 @@ def get_trx(filename):
                 trx_size = int(end_pos) - int(start_pos)
                 trx_id = xid.strip()
                 trx_start = s_time
-                res_event_list.append(Event(trx_id,event_rows,trx_size,trx_time,trx_start,start_line,end_line))
+                res_event_list.append(Event(trx_id,event_rows,trx_size,trx_time,trx_start,start_line,end_line,last_committed,sequence_number))
                 first_time = False
 
     print("------order by rows-------")
